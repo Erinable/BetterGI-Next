@@ -2,6 +2,9 @@ import { h } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
+import { performanceMonitor } from '../../core/performance/monitor';
+import { logger } from '../../core/logging/logger';
+import { storageManager } from '../../core/storage/manager';
 
 interface PerformancePanelProps {
     initialPos: { x: number; y: number };
@@ -34,17 +37,59 @@ export function PerformancePanel({ initialPos, onPosChange, onClose }: Performan
         recommendations: []
     });
 
+    // 初始化性能监控
+    useEffect(() => {
+        const initializeMonitoring = async () => {
+            try {
+                await storageManager.initialize();
+                await updatePerformanceData();
+            } catch (error) {
+                logger.error('ui', 'Failed to initialize performance panel', { error });
+            }
+        };
+
+        initializeMonitoring();
+    }, []);
+
     useEffect(() => {
         // 定期请求性能统计
         const interval = setInterval(() => {
             if (isVisible) {
-                // 这里可以添加从引擎获取性能数据的逻辑
+                updatePerformanceData();
                 bus.emit(EVENTS.PERFORMANCE_METRICS_UPDATE);
             }
         }, 2000);
 
         return () => clearInterval(interval);
     }, [isVisible]);
+
+    // 更新性能数据
+    const updatePerformanceData = async () => {
+        try {
+            const currentMetrics = performanceMonitor.getMetrics();
+            const currentRecommendations = performanceMonitor.generateRecommendations();
+            const recentStats = performanceMonitor.getRecentStats(5);
+
+            setStats({
+                overall: {
+                    matchCount: currentMetrics.matchCount,
+                    averageMatchTime: currentMetrics.averageMatchTime,
+                    bestMatchTime: currentMetrics.bestMatchTime,
+                    worstMatchTime: currentMetrics.worstMatchTime,
+                    cacheHitRate: currentMetrics.cacheHitRate,
+                    roiMatches: currentMetrics.roiMatches,
+                    fullScreenMatches: currentMetrics.fullScreenMatches
+                },
+                recent: {
+                    averageTime: recentStats.averageMatchTime,
+                    count: recentStats.matchCount
+                },
+                recommendations: currentRecommendations.map((rec: any) => rec.title)
+            });
+        } catch (error) {
+            logger.error('ui', 'Failed to update performance data', { error });
+        }
+    };
 
     const formatTime = (time: number) => {
         if (time === Infinity) return 'N/A';
@@ -216,24 +261,15 @@ export function PerformancePanel({ initialPos, onPosChange, onClose }: Performan
                         cursor: 'pointer',
                         fontSize: '10px'
                     }}
-                    onClick={() => {
-                        bus.emit('performance:reset_metrics');
-                        setStats({
-                            overall: {
-                                matchCount: 0,
-                                averageMatchTime: 0,
-                                bestMatchTime: Infinity,
-                                worstMatchTime: 0,
-                                cacheHitRate: 0,
-                                roiMatches: 0,
-                                fullScreenMatches: 0
-                            },
-                            recent: {
-                                averageTime: 0,
-                                count: 0
-                            },
-                            recommendations: []
-                        });
+                    onClick={async () => {
+                        try {
+                            performanceMonitor.reset();
+                            await updatePerformanceData();
+                            bus.emit('performance:reset_metrics');
+                            logger.info('ui', 'Performance statistics reset');
+                        } catch (error) {
+                            logger.error('ui', 'Failed to reset performance statistics', { error });
+                        }
                     }}
                 >
                     🔄 重置统计
@@ -250,8 +286,14 @@ export function PerformancePanel({ initialPos, onPosChange, onClose }: Performan
                         cursor: 'pointer',
                         fontSize: '10px'
                     }}
-                    onClick={() => {
-                        bus.emit('performance:clear_cache');
+                    onClick={async () => {
+                        try {
+                            bus.emit('performance:clear_cache');
+                            await updatePerformanceData();
+                            logger.info('ui', 'Cache cleared');
+                        } catch (error) {
+                            logger.error('ui', 'Failed to clear cache', { error });
+                        }
                     }}
                 >
                     🗑️ 清理缓存

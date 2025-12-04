@@ -5,6 +5,9 @@ import { AlgoSystem } from './algo';
 import { BaseTask } from './base-task';
 import { bus, EVENTS } from '../utils/event-bus';
 import { config as configManager } from './config-manager';
+import { logger } from './logging/logger';
+import { performanceMonitor } from './performance/monitor';
+import { storageManager } from './storage/manager';
 
 export class Engine {
     // 三大核心系统
@@ -54,63 +57,109 @@ export class Engine {
         bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
     }
     private async init() {
-        await this.input.init();
+        const endMeasurement = performanceMonitor.startMeasurement('engine_init', 'system');
 
-        // 监听 UI 事件
-        bus.on(EVENTS.TASK_START, (name: string) => this.startTask(name));
-        bus.on(EVENTS.TASK_STOP, () => this.stopTask());
-        bus.on(EVENTS.CONFIG_UPDATE, (cfg: any) => this.updateConfig(cfg));
-		// [新增] 监听截图请求
-        bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
+        try {
+            // 初始化存储管理器
+            await storageManager.initialize();
+            logger.info('engine', 'Storage manager initialized');
 
-        bus.emit(EVENTS.ENGINE_READY);
-        console.log('[BetterGi] Engine Core v2.0 Ready');
+            await this.input.init();
+            logger.info('engine', 'Input system initialized');
+
+            // 监听 UI 事件
+            bus.on(EVENTS.TASK_START, (name: string) => this.startTask(name));
+            bus.on(EVENTS.TASK_STOP, () => this.stopTask());
+            bus.on(EVENTS.CONFIG_UPDATE, (cfg: any) => this.updateConfig(cfg));
+            // [新增] 监听截图请求
+            bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
+
+            bus.emit(EVENTS.ENGINE_READY);
+            logger.info('engine', 'Engine Core v2.0 Ready');
+            console.log('[BetterGi] Engine Core v2.0 Ready');
+
+        } catch (error) {
+            logger.error('engine', 'Failed to initialize engine', { error });
+            throw error;
+        } finally {
+            endMeasurement();
+        }
     }
 
 	/**
      * 注册任务
      */
     async registerTask(task: BaseTask) {
-        // 注入上下文
-        task.ctx = {
-            input: this.input,
-            vision: this.vision,
-            algo: this.algo,
-            engine: this
-        };
-        this.tasks.set(task.name, task);
+        const endMeasurement = performanceMonitor.startMeasurement(`register_task_${task.name}`, 'system');
 
-        // [新增] 自动调用初始化钩子
         try {
-            await task.onRegister();
-        } catch (e) {
-            console.error(`[Engine] Failed to register task ${task.name}:`, e);
-        }
+            // 注入上下文
+            task.ctx = {
+                input: this.input,
+                vision: this.vision,
+                algo: this.algo,
+                engine: this
+            };
+            this.tasks.set(task.name, task);
 
-        // 通知 UI 更新
-        bus.emit(EVENTS.TASK_LIST_UPDATE, Array.from(this.tasks.keys()));
+            logger.info('engine', `Registering task: ${task.name}`);
+
+            // [新增] 自动调用初始化钩子
+            try {
+                await task.onRegister();
+                logger.info('engine', `Task ${task.name} registered successfully`);
+            } catch (e) {
+                logger.error('engine', `Failed to register task ${task.name}`, { error: e });
+                console.error(`[Engine] Failed to register task ${task.name}:`, e);
+            }
+
+            // 通知 UI 更新
+            bus.emit(EVENTS.TASK_LIST_UPDATE, Array.from(this.tasks.keys()));
+
+        } catch (error) {
+            logger.error('engine', `Failed to register task ${task.name}`, { error });
+            throw error;
+        } finally {
+            endMeasurement();
+        }
     }
 
     /**
      * 启动指定任务
      */
     async startTask(name: string) {
-        const task = this.tasks.get(name);
-        if (!task) {
-            console.error(`[Engine] Task not found: ${name}`);
-            return;
+        const endMeasurement = performanceMonitor.startMeasurement(`start_task_${name}`, 'system');
+
+        try {
+            const task = this.tasks.get(name);
+            if (!task) {
+                logger.error('engine', `Task not found: ${name}`);
+                console.error(`[Engine] Task not found: ${name}`);
+                return;
+            }
+
+            logger.info('engine', `Starting task: ${name}`);
+
+            if (this.activeTask) {
+                logger.info('engine', `Stopping previous task: ${this.activeTask.name}`);
+                this.activeTask.stop();
+            }
+
+            this.activeTask = task;
+            // 可以在这里预加载任务所需的素材
+            // await task.preload();
+
+            task.start();
+            bus.emit(EVENTS.STATUS_UPDATE, `运行中: ${task.name}`);
+
+            logger.info('engine', `Task ${name} started successfully`);
+
+        } catch (error) {
+            logger.error('engine', `Failed to start task ${name}`, { error });
+            throw error;
+        } finally {
+            endMeasurement();
         }
-
-        if (this.activeTask) {
-            this.activeTask.stop();
-        }
-
-        this.activeTask = task;
-        // 可以在这里预加载任务所需的素材
-        // await task.preload();
-
-        task.start();
-        bus.emit(EVENTS.STATUS_UPDATE, `运行中: ${task.name}`);
     }
 
     /**
@@ -118,8 +167,13 @@ export class Engine {
      */
     stopTask() {
         if (this.activeTask) {
+            const taskName = this.activeTask.name;
+            logger.info('engine', `Stopping task: ${taskName}`);
+
             this.activeTask.stop();
             this.activeTask = null;
+
+            logger.info('engine', `Task ${taskName} stopped successfully`);
         }
         // [新增] 停止任务时，立即清理屏幕上的绿框
         bus.emit(EVENTS.DEBUG_CLEAR);
@@ -127,35 +181,63 @@ export class Engine {
     }
 
     updateConfig(cfg: any) {
-        // 更新配置管理器
-        Object.keys(cfg).forEach(key => {
-            if (cfg[key] !== undefined) {
-                configManager.set(key as any, cfg[key]);
+        const endMeasurement = performanceMonitor.startMeasurement('config_update', 'system');
+
+        try {
+            logger.info('engine', 'Updating configuration', { config: cfg });
+
+            // 更新配置管理器
+            Object.keys(cfg).forEach(key => {
+                if (cfg[key] !== undefined) {
+                    configManager.set(key as any, cfg[key]);
+                }
+            });
+
+            // 同步到本地config
+            this.config = {
+                threshold: configManager.get('threshold'),
+                downsample: configManager.get('downsample'),
+                scales: configManager.get('scales'),
+                debug: configManager.get('debugMode'),
+                adaptiveScaling: configManager.get('adaptiveScaling'),
+                roiEnabled: configManager.get('roiEnabled'),
+                roiRegions: configManager.get('roiRegions'),
+                performanceMonitoring: configManager.get('performanceMonitoring'),
+                frameCacheEnabled: configManager.get('frameCacheEnabled'),
+                parallelMatching: configManager.get('parallelMatching'),
+                maxWorkers: configManager.get('maxWorkers'),
+                matchingMethod: configManager.get('matchingMethod'),
+                earlyTermination: configManager.get('earlyTermination'),
+                templateCacheSize: configManager.get('templateCacheSize')
+            };
+
+            console.log('[Engine] Config updated:', this.config);
+            logger.info('engine', 'Configuration updated successfully', { config: this.config });
+
+            // 更新性能监控配置
+            if (this.config.performanceMonitoring) {
+                performanceMonitor.updateConfig({
+                    enabled: true,
+                    realTimeMonitoring: true,
+                    detailedLogging: this.config.debug
+                });
+            } else {
+                performanceMonitor.updateConfig({
+                    enabled: false
+                });
             }
-        });
 
-        // 同步到本地config
-        this.config = {
-            threshold: configManager.get('threshold'),
-            downsample: configManager.get('downsample'),
-            scales: configManager.get('scales'),
-            debug: configManager.get('debugMode'),
-            adaptiveScaling: configManager.get('adaptiveScaling'),
-            roiEnabled: configManager.get('roiEnabled'),
-            roiRegions: configManager.get('roiRegions'),
-            performanceMonitoring: configManager.get('performanceMonitoring'),
-            frameCacheEnabled: configManager.get('frameCacheEnabled'),
-            parallelMatching: configManager.get('parallelMatching'),
-            maxWorkers: configManager.get('maxWorkers'),
-            matchingMethod: configManager.get('matchingMethod'),
-            earlyTermination: configManager.get('earlyTermination'),
-            templateCacheSize: configManager.get('templateCacheSize')
-        };
+            // [新增] 如果用户关闭了 debug，立即清除屏幕上的残留
+            if (cfg.debugMode === false || cfg.debug === false) {
+                bus.emit(EVENTS.DEBUG_CLEAR);
+                logger.debug('engine', 'Debug cleared via config update');
+            }
 
-		console.log('[Engine] Config updated:', this.config);
-        // [新增] 如果用户关闭了 debug，立即清除屏幕上的残留
-        if (cfg.debugMode === false || cfg.debug === false) {
-            bus.emit(EVENTS.DEBUG_CLEAR);
+        } catch (error) {
+            logger.error('engine', 'Failed to update configuration', { error });
+            throw error;
+        } finally {
+            endMeasurement();
         }
     }
 
