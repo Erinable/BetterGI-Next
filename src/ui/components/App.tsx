@@ -132,11 +132,12 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     };
 
     return (
-        <div 
-            class="bgi-panel" 
-            style={{ 
+        <>
+        <div
+            class="bgi-panel"
+            style={{
                 top: pos.y, left: pos.x, position: 'fixed', pointerEvents: 'auto',
-                width: '240px', fontSize: '12px' 
+                width: '240px', fontSize: '12px'
             }}
         >
             <div 
@@ -293,5 +294,6 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                 onClose={() => setShowPerformancePanel(false)}
             />
         )}
+        </>
     );
 }
