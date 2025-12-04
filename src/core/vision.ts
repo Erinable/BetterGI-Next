@@ -305,10 +305,26 @@ export class VisionSystem {
                 cacheEnabled: options.frameCacheEnabled !== false
             };
 
-            const transfer = [screen.data.buffer];
+            // 安全的ArrayBuffer传输 - 创建副本避免重复传输问题
+            const screenDataClone = new Uint8ClampedArray(screen.data);
+            const screenClone = new ImageData(
+                screenDataClone,
+                screen.width,
+                screen.height
+            );
+
+            // 同样为template创建安全副本
+            const templateDataClone = new Uint8ClampedArray(template.data);
+            const templateClone = new ImageData(
+                templateDataClone,
+                template.width,
+                template.height
+            );
+
+            const transfer = [screenDataClone.buffer, templateDataClone.buffer];
             this.worker.postMessage({
                 id, type: 'MATCH',
-                payload: { image: screen, template, config: enhancedConfig }
+                payload: { image: screenClone, template: templateClone, config: enhancedConfig }
             }, transfer);
         });
     }
