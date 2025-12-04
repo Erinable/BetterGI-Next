@@ -184,6 +184,40 @@
     border-color: #f57c00;
 }
 
+/* Secondary buttons with better contrast */
+.bgi-btn.secondary {
+    background: rgba(52, 52, 52, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+}
+
+.bgi-btn.secondary:hover {
+    background: rgba(73, 73, 73, 0.95);
+    border-color: rgba(255, 255, 255, 0.3);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+}
+
+.bgi-btn.secondary:active {
+    background: rgba(38, 38, 38, 0.95);
+}
+
+.bgi-btn.action {
+    background: rgba(24, 24, 24, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #cccccc;
+}
+
+.bgi-btn.action:hover {
+    background: rgba(38, 38, 38, 0.95);
+    border-color: rgba(255, 255, 255, 0.4);
+    color: #ffffff;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+}
+
+.bgi-btn.action:active {
+    background: rgba(18, 18, 18, 0.95);
+}
+
 .row {
     margin-bottom: 8px;
 }

@@ -243,7 +243,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             {/* 高级设置切换 */}
             <div class="row" style={{ marginTop: '10px' }}>
                 <button
-                    class={`bgi-btn ${showAdvanced ? 'primary' : ''}`}
+                    class={`bgi-btn ${showAdvanced ? 'primary' : 'secondary'}`}
                     onClick={() => setShowAdvanced(!showAdvanced)}
                 >
                     {showAdvanced ? '▼ 隐藏高级设置' : '▶ 显示高级设置'}
@@ -306,8 +306,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             </div>
 
             <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
-                <button class="bgi-btn" onClick={onCrop}>📷 截图</button>
-                <button class="bgi-btn" onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
+                <button class="bgi-btn action" onClick={onCrop}>📷 截图</button>
+                <button class="bgi-btn secondary" onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
             </div>
 
             <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
