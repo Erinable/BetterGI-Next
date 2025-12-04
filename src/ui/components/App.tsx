@@ -2,6 +2,7 @@ import { h } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
+import { PerformancePanel } from './PerformancePanel';
 
 interface AppProps {
     initialPos: { x: number; y: number };
@@ -19,6 +20,10 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
 
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
+
+    // 性能面板状态
+    const [showPerformancePanel, setShowPerformancePanel] = useState(false);
+    const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
 
     // 配置项状态
     const [threshold, setThreshold] = useState(0.8);
@@ -262,12 +267,31 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                 <button class="bgi-btn" style={{ flex: 1 }} onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
             </div>
 
-            <button 
+            <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
+                <button
+                    class="bgi-btn"
+                    style={{ flex: 1, background: '#2196F3' }}
+                    onClick={() => setShowPerformancePanel(!showPerformancePanel)}
+                >
+                    📊 {showPerformancePanel ? '隐藏性能监控' : '显示性能监控'}
+                </button>
+            </div>
+
+            <button
                 class={`bgi-btn ${running ? 'danger' : 'primary'}`}
                 onClick={toggle}
             >
                 {running ? '⏹ 停止任务' : '▶ 启动任务'}
             </button>
         </div>
+
+        {/* 性能监控面板 */}
+        {showPerformancePanel && (
+            <PerformancePanel
+                initialPos={performancePanelPos}
+                onPosChange={setPerformancePanelPos}
+                onClose={() => setShowPerformancePanel(false)}
+            />
+        )}
     );
 }
