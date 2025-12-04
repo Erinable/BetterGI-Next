@@ -2,6 +2,8 @@ import { h } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
+import { PerformancePanel } from './PerformancePanel';
+import { config as configManager } from '../../core/config-manager';
 
 interface AppProps {
     initialPos: { x: number; y: number };
@@ -20,19 +22,35 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
 
-    // 配置项状态
-    const [threshold, setThreshold] = useState(0.8);
-    const [downsample, setDownsample] = useState(0.33);
-    const [scaleMode, setScaleMode] = useState('OFF');
-    const [isDebug, setIsDebug] = useState(true);
+    // 性能面板状态
+    const [showPerformancePanel, setShowPerformancePanel] = useState(false);
+    const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
 
-    // 性能相关状态
+    // 配置项状态 - 从配置管理器读取保存的值
+    const [threshold, setThreshold] = useState(configManager.get('threshold'));
+    const [downsample, setDownsample] = useState(configManager.get('downsample'));
+    const [isDebug, setIsDebug] = useState(configManager.get('debugMode'));
+
+    // 性能相关状态 - 从配置管理器读取保存的值
     const [performanceStats, setPerformanceStats] = useState<any>(null);
     const [showAdvanced, setShowAdvanced] = useState(false);
-    const [adaptiveScaling, setAdaptiveScaling] = useState(true);
-    const [roiEnabled, setRoiEnabled] = useState(false);
-    const [matchingMethod, setMatchingMethod] = useState('TM_CCOEFF_NORMED');
-    const [earlyTermination, setEarlyTermination] = useState(true);
+    const [adaptiveScaling, setAdaptiveScaling] = useState(configManager.get('adaptiveScaling'));
+    const [roiEnabled, setRoiEnabled] = useState(configManager.get('roiEnabled'));
+    const [matchingMethod, setMatchingMethod] = useState(configManager.get('matchingMethod'));
+    const [earlyTermination, setEarlyTermination] = useState(configManager.get('earlyTermination'));
+
+    // 从配置管理器读取scales并转换为模式
+    const getScaleMode = (scales: number[]) => {
+        if (scales.length === 1) return 'OFF';
+        if (scales.length === 3 && scales[0] === 0.9 && scales[1] === 1.0 && scales[2] === 1.1) return 'NORMAL';
+        if (scales.length === 5) return 'WIDE';
+        return 'OFF';
+    };
+    const [scaleMode, setScaleMode] = useState(getScaleMode(configManager.get('scales')));
+
+    // 配置管理状态
+    const [pendingConfig, setPendingConfig] = useState<any>({});
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
     useEffect(() => {
         const updateStatus = (msg: string) => setStatus(msg);
@@ -42,15 +60,9 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
         const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
         bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
 
-        // 初始化时发送一次默认配置给引擎
-        sendConfig({
-            threshold: 0.8,
-            downsample: 0.33,
-            scales: [1.0],
-            adaptiveScaling: true,
-            earlyTermination: true,
-            matchingMethod: 'TM_CCOEFF_NORMED'
-        });
+        // 注意：不再初始化时发送配置
+        // 引擎在构造函数中已经从configManager读取了配置
+        // UI只应该在用户手动更改配置时才发送更新
 
         return () => {
             bus.off(EVENTS.STATUS_UPDATE, updateStatus);
@@ -75,63 +87,82 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const handleThresholdChange = (e: any) => {
         const val = parseFloat(e.target.value);
         setThreshold(val);
-        sendConfig({ threshold: val });
+        setPendingConfig(prev => ({ ...prev, threshold: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleQualityChange = (e: any) => {
         const val = parseFloat(e.target.value);
         setDownsample(val);
-        sendConfig({ downsample: val });
+        setPendingConfig(prev => ({ ...prev, downsample: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleScaleChange = (e: any) => {
         const mode = e.target.value;
         setScaleMode(mode);
-        
+
         // 将模式转换为具体的比例数组
         let scales = [1.0];
         if (mode === 'NORMAL') scales = [0.9, 1.0, 1.1];
         if (mode === 'WIDE') scales = [0.8, 0.9, 1.0, 1.1, 1.2]; // 范围更广但更慢
-        
-        sendConfig({ scales });
+
+        setPendingConfig(prev => ({ ...prev, scales }));
+        setHasUnsavedChanges(true);
     };
 
     const handleDebugChange = (e: any) => {
         const val = e.target.checked;
         setIsDebug(val);
-        sendConfig({ debugMode: val });
+        setPendingConfig(prev => ({ ...prev, debugMode: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleAdaptiveScalingChange = (e: any) => {
         const val = e.target.checked;
         setAdaptiveScaling(val);
-        sendConfig({ adaptiveScaling: val });
+        setPendingConfig(prev => ({ ...prev, adaptiveScaling: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleRoiEnabledChange = (e: any) => {
         const val = e.target.checked;
         setRoiEnabled(val);
-        sendConfig({ roiEnabled: val });
+        setPendingConfig(prev => ({ ...prev, roiEnabled: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleMatchingMethodChange = (e: any) => {
         const val = e.target.value;
         setMatchingMethod(val);
-        sendConfig({ matchingMethod: val });
+        setPendingConfig(prev => ({ ...prev, matchingMethod: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleEarlyTerminationChange = (e: any) => {
         const val = e.target.checked;
         setEarlyTermination(val);
-        sendConfig({ earlyTermination: val });
+        setPendingConfig(prev => ({ ...prev, earlyTermination: val }));
+        setHasUnsavedChanges(true);
+    };
+
+    // 保存配置的函数
+    const handleSaveConfig = () => {
+        if (Object.keys(pendingConfig).length > 0) {
+            // 发送所有待保存的配置
+            sendConfig(pendingConfig);
+            setPendingConfig({});
+            setHasUnsavedChanges(false);
+        }
     };
 
     return (
-        <div 
-            class="bgi-panel" 
-            style={{ 
+        <>
+        <div
+            class="bgi-panel"
+            style={{
                 top: pos.y, left: pos.x, position: 'fixed', pointerEvents: 'auto',
-                width: '240px', fontSize: '12px' 
+                width: '240px', fontSize: '12px'
             }}
         >
             <div 
@@ -262,12 +293,49 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                 <button class="bgi-btn" style={{ flex: 1 }} onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
             </div>
 
-            <button 
+            <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
+                <button
+                    class="bgi-btn"
+                    style={{ flex: 1, background: '#2196F3' }}
+                    onClick={() => setShowPerformancePanel(!showPerformancePanel)}
+                >
+                    📊 {showPerformancePanel ? '隐藏性能监控' : '显示性能监控'}
+                </button>
+            </div>
+
+            {/* 配置保存按钮 */}
+            {hasUnsavedChanges && (
+                <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
+                    <button
+                        class="bgi-btn"
+                        style={{
+                            flex: 1,
+                            background: '#FF9800',
+                            animation: 'pulse 2s infinite'
+                        }}
+                        onClick={handleSaveConfig}
+                    >
+                        💾 保存配置更改
+                    </button>
+                </div>
+            )}
+
+            <button
                 class={`bgi-btn ${running ? 'danger' : 'primary'}`}
                 onClick={toggle}
             >
                 {running ? '⏹ 停止任务' : '▶ 启动任务'}
             </button>
         </div>
+
+        {/* 性能监控面板 */}
+        {showPerformancePanel && (
+            <PerformancePanel
+                initialPos={performancePanelPos}
+                onPosChange={setPerformancePanelPos}
+                onClose={() => setShowPerformancePanel(false)}
+            />
+        )}
+        </>
     );
 }

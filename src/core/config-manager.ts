@@ -1,3 +1,6 @@
+// src/core/config-manager.ts
+import { logger } from './logging/logger';
+
 // 定义配置的形状
 export interface AppConfig {
     threshold: number;
@@ -63,7 +66,7 @@ export class ConfigManager {
                 saved = localStorageData ? localStorageData : null;
             }
         } catch (e) {
-            console.warn('[ConfigManager] Failed to load config from storage:', e);
+            logger.warn('config', 'Failed to load config from storage', { error: e });
         }
 
         // 如果有保存的配置，合并默认配置
@@ -72,7 +75,7 @@ export class ConfigManager {
                 const parsedConfig = JSON.parse(saved);
                 return { ...DEFAULT_CONFIG, ...parsedConfig };
             } catch (e) {
-                console.warn('[ConfigManager] Failed to parse saved config, using defaults:', e);
+                logger.warn('config', 'Failed to parse saved config, using defaults', { error: e });
                 return DEFAULT_CONFIG;
             }
         }
@@ -91,7 +94,7 @@ export class ConfigManager {
                 localStorage.setItem(this.storageKey, configString);
             }
         } catch (e) {
-            console.warn('[ConfigManager] Failed to save config to storage:', e);
+            logger.warn('config', 'Failed to save config to storage', { error: e });
         }
     }
 
@@ -138,7 +141,7 @@ export class ConfigManager {
             this.saveConfig();
             return true;
         } catch (e) {
-            console.error('[ConfigManager] Failed to import config:', e);
+            logger.error('config', 'Failed to import config', { error: e });
             return false;
         }
     }

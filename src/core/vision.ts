@@ -1,5 +1,6 @@
 import { bus, EVENTS } from '../utils/event-bus';
 import { performanceMonitor } from './performance-monitor';
+import { logger } from './logging/logger';
 
 interface FrameCache {
     data: ImageData;
@@ -29,7 +30,7 @@ export class VisionSystem {
         this.worker.onmessage = (e) => {
             const { id, type, result } = e.data;
             if (type === 'INIT_DONE') {
-                console.log('[BGI] Vision Worker Ready');
+                logger.info('vision', 'Worker ready');
                 // 请求Worker统计信息
                 this.getWorkerStats();
             } else if (type === 'MATCH_RESULT') {
@@ -58,7 +59,7 @@ export class VisionSystem {
                 }
             } else if (type === 'STATS') {
                 // Worker统计信息回调
-                console.log('[BGI] Worker Stats:', result.stats);
+                logger.debug('vision', 'Worker stats received', { stats: result.stats });
                 bus.emit(EVENTS.PERFORMANCE_WORKER_STATS, result.stats);
             }
         };
@@ -75,7 +76,7 @@ export class VisionSystem {
         const v = document.querySelector('video');
         if (v && v.videoWidth > 0) {
             this.video = v;
-            console.log(`[BGI] Locked Video: ${v.videoWidth}x${v.videoHeight}`);
+            logger.info('vision', `Video locked: ${v.videoWidth}x${v.videoHeight}`);
         }
     }
 
@@ -241,17 +242,17 @@ export class VisionSystem {
                     // 使用现代 Clipboard API
                     await navigator.clipboard.writeText(base64);
                 } else {
-                    console.warn('[Vision] Unable to copy to clipboard - no clipboard API available');
+                    logger.warn('vision', 'Unable to copy to clipboard - no clipboard API available');
                 }
             } catch (e) {
-                console.warn('[Vision] Failed to copy to clipboard:', e);
+                logger.warn('vision', 'Failed to copy to clipboard', { error: e });
             }
 
-            console.log(`[Vision] Captured from Video: ${realW}x${realH} at (${realX},${realY})`);
+            logger.debug('vision', `Captured from video: ${realW}x${realH} at (${realX},${realY})`);
 
             return ctx.getImageData(0, 0, realW, realH);
         } catch (e) {
-            console.error('[Vision] Crop error:', e);
+            logger.error('vision', 'Crop error', { error: e });
             return null;
         }
     }

@@ -1,5 +1,6 @@
 // src/core/algo.ts
 import { VisionSystem } from './vision';
+import { logger } from './logging/logger';
 
 interface Asset {
     name: string;
@@ -48,7 +49,7 @@ export class AlgoSystem {
     async findAsync(screen: ImageData, name: string, options: { threshold?: number, downsample?: number } = {}) {
         const asset = this.assets.get(name);
         if (!asset) {
-            console.warn(`[Algo] Asset not found: ${name}`);
+            logger.warn('algo', `Asset not found: ${name}`);
             return null;
         }
 
