@@ -19,21 +19,43 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
 
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
-    
+
     // 配置项状态
     const [threshold, setThreshold] = useState(0.8);
-    const [downsample, setDownsample] = useState(0.5);
-    const [scaleMode, setScaleMode] = useState('NORMAL');
+    const [downsample, setDownsample] = useState(0.33);
+    const [scaleMode, setScaleMode] = useState('OFF');
     const [isDebug, setIsDebug] = useState(true);
+
+    // 性能相关状态
+    const [performanceStats, setPerformanceStats] = useState<any>(null);
+    const [showAdvanced, setShowAdvanced] = useState(false);
+    const [adaptiveScaling, setAdaptiveScaling] = useState(true);
+    const [roiEnabled, setRoiEnabled] = useState(false);
+    const [matchingMethod, setMatchingMethod] = useState('TM_CCOEFF_NORMED');
+    const [earlyTermination, setEarlyTermination] = useState(true);
 
     useEffect(() => {
         const updateStatus = (msg: string) => setStatus(msg);
         bus.on(EVENTS.STATUS_UPDATE, updateStatus);
-        
+
+        // 性能统计事件监听
+        const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
+        bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
+
         // 初始化时发送一次默认配置给引擎
-        sendConfig({ threshold: 0.8, downsample: 0.5, scales: [0.9, 1.0, 1.1] });
-        
-        return () => {};
+        sendConfig({
+            threshold: 0.8,
+            downsample: 0.33,
+            scales: [1.0],
+            adaptiveScaling: true,
+            earlyTermination: true,
+            matchingMethod: 'TM_CCOEFF_NORMED'
+        });
+
+        return () => {
+            bus.off(EVENTS.STATUS_UPDATE, updateStatus);
+            bus.off(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
+        };
     }, []);
 
     const toggle = () => {
@@ -77,7 +99,31 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const handleDebugChange = (e: any) => {
         const val = e.target.checked;
         setIsDebug(val);
-        sendConfig({ debug: val });
+        sendConfig({ debugMode: val });
+    };
+
+    const handleAdaptiveScalingChange = (e: any) => {
+        const val = e.target.checked;
+        setAdaptiveScaling(val);
+        sendConfig({ adaptiveScaling: val });
+    };
+
+    const handleRoiEnabledChange = (e: any) => {
+        const val = e.target.checked;
+        setRoiEnabled(val);
+        sendConfig({ roiEnabled: val });
+    };
+
+    const handleMatchingMethodChange = (e: any) => {
+        const val = e.target.value;
+        setMatchingMethod(val);
+        sendConfig({ matchingMethod: val });
+    };
+
+    const handleEarlyTerminationChange = (e: any) => {
+        const val = e.target.checked;
+        setEarlyTermination(val);
+        sendConfig({ earlyTermination: val });
     };
 
     return (
@@ -135,6 +181,75 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                     <option value="WIDE">宽范围 (0.8 ~ 1.2)</option>
                 </select>
             </div>
+
+            {/* 性能统计显示 */}
+            {performanceStats && (
+                <div class="row" style={{ fontSize: '10px', color: '#aaa', border: '1px solid #333', padding: '5px', borderRadius: '3px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>⚡ 平均耗时:</span>
+                        <span>{performanceStats.averageTime || 0}ms</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>📊 匹配次数:</span>
+                        <span>{performanceStats.matchCount || 0}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>💾 缓存大小:</span>
+                        <span>{performanceStats.cacheSize || 0}</span>
+                    </div>
+                </div>
+            )}
+
+            {/* 高级设置切换 */}
+            <div class="row" style={{ marginTop: '10px' }}>
+                <button
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    style={{
+                        width: '100%',
+                        background: showAdvanced ? '#060' : '#333',
+                        border: '1px solid #444',
+                        color: 'white',
+                        padding: '5px',
+                        cursor: 'pointer',
+                        fontSize: '11px'
+                    }}
+                >
+                    {showAdvanced ? '▼ 隐藏高级设置' : '▶ 显示高级设置'}
+                </button>
+            </div>
+
+            {/* 高级性能设置 */}
+            {showAdvanced && (
+                <div style={{ border: '1px solid #444', padding: '8px', margin: '5px 0', borderRadius: '3px' }}>
+                    {/* 自适应缩放 */}
+                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                        <input type="checkbox" id="chk-adaptive" checked={adaptiveScaling} onChange={handleAdaptiveScalingChange} />
+                        <label for="chk-adaptive" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>自适应缩放</label>
+                    </div>
+
+                    {/* ROI匹配 */}
+                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                        <input type="checkbox" id="chk-roi" checked={roiEnabled} onChange={handleRoiEnabledChange} />
+                        <label for="chk-roi" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>ROI区域匹配</label>
+                    </div>
+
+                    {/* 早期终止 */}
+                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                        <input type="checkbox" id="chk-early" checked={earlyTermination} onChange={handleEarlyTerminationChange} />
+                        <label for="chk-early" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>早期终止优化</label>
+                    </div>
+
+                    {/* 匹配算法 */}
+                    <div class="row" style={{ marginBottom: '5px' }}>
+                        <label style={{ fontSize: '11px' }}>匹配算法</label>
+                        <select value={matchingMethod} onChange={handleMatchingMethodChange} style={{width:'100%', background:'#222', color:'white', border:'1px solid #444', fontSize: '11px' }}>
+                            <option value="TM_CCOEFF_NORMED">标准相关系数</option>
+                            <option value="TM_SQDIFF_NORMED">平方差匹配</option>
+                            <option value="TM_CCORR_NORMED">相关性匹配</option>
+                        </select>
+                    </div>
+                </div>
+            )}
 
             {/* Debug 开关 */}
             <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '5px' }}>

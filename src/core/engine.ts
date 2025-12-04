@@ -4,6 +4,7 @@ import { VisionSystem } from './vision';
 import { AlgoSystem } from './algo';
 import { BaseTask } from './base-task';
 import { bus, EVENTS } from '../utils/event-bus';
+import { config as configManager } from './config-manager';
 
 export class Engine {
     // 三大核心系统
@@ -15,12 +16,23 @@ export class Engine {
     private tasks: Map<string, BaseTask> = new Map();
     private activeTask: BaseTask | null = null;
 
-    // 确保默认配置包含这些字段
+    // 使用配置管理器，保持向后兼容
     config = {
-        threshold: 0.8,
-        downsample: 0.5,
-        scales: [0.9, 1.0, 1.1], // 默认开启一点点多尺度
-        debug: true
+        threshold: configManager.get('threshold'),
+        downsample: configManager.get('downsample'),
+        scales: configManager.get('scales'),
+        debug: configManager.get('debugMode'),
+        // 新增性能配置
+        adaptiveScaling: configManager.get('adaptiveScaling'),
+        roiEnabled: configManager.get('roiEnabled'),
+        roiRegions: configManager.get('roiRegions'),
+        performanceMonitoring: configManager.get('performanceMonitoring'),
+        frameCacheEnabled: configManager.get('frameCacheEnabled'),
+        parallelMatching: configManager.get('parallelMatching'),
+        maxWorkers: configManager.get('maxWorkers'),
+        matchingMethod: configManager.get('matchingMethod'),
+        earlyTermination: configManager.get('earlyTermination'),
+        templateCacheSize: configManager.get('templateCacheSize')
     };
 
     constructor() {
@@ -115,19 +127,43 @@ export class Engine {
     }
 
     updateConfig(cfg: any) {
-        this.config = { ...this.config, ...cfg };
+        // 更新配置管理器
+        Object.keys(cfg).forEach(key => {
+            if (cfg[key] !== undefined) {
+                configManager.set(key as any, cfg[key]);
+            }
+        });
+
+        // 同步到本地config
+        this.config = {
+            threshold: configManager.get('threshold'),
+            downsample: configManager.get('downsample'),
+            scales: configManager.get('scales'),
+            debug: configManager.get('debugMode'),
+            adaptiveScaling: configManager.get('adaptiveScaling'),
+            roiEnabled: configManager.get('roiEnabled'),
+            roiRegions: configManager.get('roiRegions'),
+            performanceMonitoring: configManager.get('performanceMonitoring'),
+            frameCacheEnabled: configManager.get('frameCacheEnabled'),
+            parallelMatching: configManager.get('parallelMatching'),
+            maxWorkers: configManager.get('maxWorkers'),
+            matchingMethod: configManager.get('matchingMethod'),
+            earlyTermination: configManager.get('earlyTermination'),
+            templateCacheSize: configManager.get('templateCacheSize')
+        };
+
 		console.log('[Engine] Config updated:', this.config);
         // [新增] 如果用户关闭了 debug，立即清除屏幕上的残留
-        if (cfg.debug === false) {
+        if (cfg.debugMode === false || cfg.debug === false) {
             bus.emit(EVENTS.DEBUG_CLEAR);
         }
     }
 
-	handleCrop(rect: { x: number, y: number, w: number, h: number }) {
+	async handleCrop(rect: { x: number, y: number, w: number, h: number }) {
         console.log('[Engine] Processing crop request...', rect);
 
         // 1. 尝试截图
-        const templateData = this.vision.captureTemplate(rect);
+        const templateData = await this.vision.captureTemplate(rect);
 
         // 2. 检查结果
         if (templateData) {
