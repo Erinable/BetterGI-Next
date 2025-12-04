@@ -3,6 +3,7 @@ import { useState, useEffect } from 'preact/hooks';
 import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { PerformancePanel } from './PerformancePanel';
+import { config as configManager } from '../../core/config-manager';
 
 interface AppProps {
     initialPos: { x: number; y: number };
@@ -25,19 +26,27 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const [showPerformancePanel, setShowPerformancePanel] = useState(false);
     const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
 
-    // 配置项状态
-    const [threshold, setThreshold] = useState(0.8);
-    const [downsample, setDownsample] = useState(0.33);
-    const [scaleMode, setScaleMode] = useState('OFF');
-    const [isDebug, setIsDebug] = useState(true);
+    // 配置项状态 - 从配置管理器读取保存的值
+    const [threshold, setThreshold] = useState(configManager.get('threshold'));
+    const [downsample, setDownsample] = useState(configManager.get('downsample'));
+    const [isDebug, setIsDebug] = useState(configManager.get('debugMode'));
 
-    // 性能相关状态
+    // 性能相关状态 - 从配置管理器读取保存的值
     const [performanceStats, setPerformanceStats] = useState<any>(null);
     const [showAdvanced, setShowAdvanced] = useState(false);
-    const [adaptiveScaling, setAdaptiveScaling] = useState(true);
-    const [roiEnabled, setRoiEnabled] = useState(false);
-    const [matchingMethod, setMatchingMethod] = useState('TM_CCOEFF_NORMED');
-    const [earlyTermination, setEarlyTermination] = useState(true);
+    const [adaptiveScaling, setAdaptiveScaling] = useState(configManager.get('adaptiveScaling'));
+    const [roiEnabled, setRoiEnabled] = useState(configManager.get('roiEnabled'));
+    const [matchingMethod, setMatchingMethod] = useState(configManager.get('matchingMethod'));
+    const [earlyTermination, setEarlyTermination] = useState(configManager.get('earlyTermination'));
+
+    // 从配置管理器读取scales并转换为模式
+    const getScaleMode = (scales: number[]) => {
+        if (scales.length === 1) return 'OFF';
+        if (scales.length === 3 && scales[0] === 0.9 && scales[1] === 1.0 && scales[2] === 1.1) return 'NORMAL';
+        if (scales.length === 5) return 'WIDE';
+        return 'OFF';
+    };
+    const [scaleMode, setScaleMode] = useState(getScaleMode(configManager.get('scales')));
 
     // 配置管理状态
     const [pendingConfig, setPendingConfig] = useState<any>({});
@@ -51,14 +60,17 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
         const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
         bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
 
-        // 初始化时发送一次默认配置给引擎
+        // 初始化时发送当前保存的配置给引擎（只发送一次）
         sendConfig({
-            threshold: 0.8,
-            downsample: 0.33,
-            scales: [1.0],
-            adaptiveScaling: true,
-            earlyTermination: true,
-            matchingMethod: 'TM_CCOEFF_NORMED'
+            threshold: configManager.get('threshold'),
+            downsample: configManager.get('downsample'),
+            scales: configManager.get('scales'),
+            debugMode: configManager.get('debugMode'),
+            adaptiveScaling: configManager.get('adaptiveScaling'),
+            roiEnabled: configManager.get('roiEnabled'),
+            matchingMethod: configManager.get('matchingMethod'),
+            earlyTermination: configManager.get('earlyTermination'),
+            performanceMonitoring: configManager.get('performanceMonitoring')
         });
 
         return () => {
