@@ -197,7 +197,7 @@ export class VisionSystem {
     /**
      * 截图取模
      */
-    captureTemplate(rect: { x: number, y: number, w: number, h: number }) {
+    async captureTemplate(rect: { x: number, y: number, w: number, h: number }) {
         const ctxInfo = this.getSourceContext();
         if (!ctxInfo) return null;
         const { source, visualRect } = ctxInfo;
@@ -232,9 +232,23 @@ export class VisionSystem {
             // ... 检查 check.data ...
 
             const base64 = tmpC.toDataURL('image/png');
-            GM_setClipboard(base64);
+
+            // 尝试复制到剪贴板
+            try {
+                if (typeof GM_setClipboard !== 'undefined') {
+                    GM_setClipboard(base64);
+                } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                    // 使用现代 Clipboard API
+                    await navigator.clipboard.writeText(base64);
+                } else {
+                    console.warn('[Vision] Unable to copy to clipboard - no clipboard API available');
+                }
+            } catch (e) {
+                console.warn('[Vision] Failed to copy to clipboard:', e);
+            }
+
             console.log(`[Vision] Captured from Video: ${realW}x${realH} at (${realX},${realY})`);
-            
+
             return ctx.getImageData(0, 0, realW, realH);
         } catch (e) {
             console.error('[Vision] Crop error:', e);

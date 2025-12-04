@@ -159,11 +159,11 @@ export class Engine {
         }
     }
 
-	handleCrop(rect: { x: number, y: number, w: number, h: number }) {
+	async handleCrop(rect: { x: number, y: number, w: number, h: number }) {
         console.log('[Engine] Processing crop request...', rect);
 
         // 1. 尝试截图
-        const templateData = this.vision.captureTemplate(rect);
+        const templateData = await this.vision.captureTemplate(rect);
 
         // 2. 检查结果
         if (templateData) {
