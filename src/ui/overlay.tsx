@@ -5,7 +5,7 @@ import { App } from './components/App';
 import { DebugLayer } from './components/DebugLayer';
 import { FloatBall } from './components/FloatBall';
 import { bus, EVENTS } from '../utils/event-bus';
-import cssContent from './styles.css';
+import cssContent from './styles-compat.css';
 
 function Root() {
     const [showPanel, setShowPanel] = useState(false);

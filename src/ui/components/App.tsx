@@ -165,37 +165,41 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                 width: '240px', fontSize: '12px'
             }}
         >
-            <div 
-                class="row header" 
+            <div
+                class="row header"
                 onMouseDown={startDrag}
-                style={{ 
-                    cursor: 'move', borderBottom: '1px solid #333', 
-                    paddingBottom: '5px', marginBottom: '10px',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    userSelect: 'none'
-                }}
             >
                 <strong>BetterGi v2.0</strong>
-                <span onMouseDown={(e) => e.stopPropagation()} onClick={onClose} style={{ cursor: 'pointer', padding: '0 5px', fontSize: '16px' }}>×</span>
+                <span
+                    class="close-btn"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={onClose}
+                >
+                    ×
+                </span>
             </div>
 
             <div class="row">
-                <label>状态: <span style={{ color: running ? '#0f0' : '#888' }}>{status}</span></label>
+                <label>
+                    状态:
+                    <span class={`status-indicator ${running ? 'running' : status.includes('等待') ? 'waiting' : 'stopped'}`}></span>
+                    {status}
+                </label>
             </div>
 
             {/* 1. 匹配阈值 */}
-            <div class="row">
+            <div class={`row ${pendingConfig.threshold !== undefined ? 'config-changed' : ''}`}>
                 <div style={{display:'flex', justifyContent:'space-between'}}>
                     <label>匹配阈值</label>
-                    <span style={{color:'#aaa'}}>{threshold.toFixed(2)}</span>
+                    <span style={{color:'var(--color-text-tertiary)'}}>{threshold.toFixed(2)}</span>
                 </div>
-                <input type="range" min="0.5" max="1.0" step="0.01" value={threshold} onInput={handleThresholdChange} style={{width:'100%'}} />
+                <input type="range" min="0.5" max="1.0" step="0.01" value={threshold} onInput={handleThresholdChange} />
             </div>
 
             {/* 2. 预览精度 (降采样) */}
-            <div class="row">
+            <div class={`row ${pendingConfig.downsample !== undefined ? 'config-changed' : ''}`}>
                 <label>预览精度 (速度 vs 画质)</label>
-                <select value={downsample} onChange={handleQualityChange} style={{width:'100%', background:'#222', color:'white', border:'1px solid #444'}}>
+                <select value={downsample} onChange={handleQualityChange}>
                     <option value="0.33">极速 (0.33x)</option>
                     <option value="0.5">标准 (0.5x)</option>
                     <option value="0.66">均衡 (0.66x)</option>
@@ -204,9 +208,9 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             </div>
 
             {/* 3. 多尺度搜索 */}
-            <div class="row">
+            <div class={`row ${pendingConfig.scales !== undefined ? 'config-changed' : ''}`}>
                 <label>多尺度搜索 (大小变化)</label>
-                <select value={scaleMode} onChange={handleScaleChange} style={{width:'100%', background:'#222', color:'white', border:'1px solid #444'}}>
+                <select value={scaleMode} onChange={handleScaleChange}>
                     <option value="OFF">关闭 (仅 1.0x)</option>
                     <option value="NORMAL">标准 (0.9 ~ 1.1)</option>
                     <option value="WIDE">宽范围 (0.8 ~ 1.2)</option>
@@ -215,16 +219,21 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
 
             {/* 性能统计显示 */}
             {performanceStats && (
-                <div class="row" style={{ fontSize: '10px', color: '#aaa', border: '1px solid #333', padding: '5px', borderRadius: '3px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div class="performance-stats">
+                    <div class="stat-row">
                         <span>⚡ 平均耗时:</span>
-                        <span>{performanceStats.averageTime || 0}ms</span>
+                        <span style={{
+                            color: performanceStats.averageTime > 300 ? 'var(--color-danger)' :
+                                   performanceStats.averageTime > 100 ? 'var(--color-warning)' : 'var(--color-success)'
+                        }}>
+                            {performanceStats.averageTime || 0}ms
+                        </span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <div class="stat-row">
                         <span>📊 匹配次数:</span>
                         <span>{performanceStats.matchCount || 0}</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <div class="stat-row">
                         <span>💾 缓存大小:</span>
                         <span>{performanceStats.cacheSize || 0}</span>
                     </div>
@@ -234,16 +243,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             {/* 高级设置切换 */}
             <div class="row" style={{ marginTop: '10px' }}>
                 <button
+                    class={`bgi-btn ${showAdvanced ? 'primary' : ''}`}
                     onClick={() => setShowAdvanced(!showAdvanced)}
-                    style={{
-                        width: '100%',
-                        background: showAdvanced ? '#060' : '#333',
-                        border: '1px solid #444',
-                        color: 'white',
-                        padding: '5px',
-                        cursor: 'pointer',
-                        fontSize: '11px'
-                    }}
                 >
                     {showAdvanced ? '▼ 隐藏高级设置' : '▶ 显示高级设置'}
                 </button>
@@ -251,29 +252,40 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
 
             {/* 高级性能设置 */}
             {showAdvanced && (
-                <div style={{ border: '1px solid #444', padding: '8px', margin: '5px 0', borderRadius: '3px' }}>
-                    {/* 自适应缩放 */}
-                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-                        <input type="checkbox" id="chk-adaptive" checked={adaptiveScaling} onChange={handleAdaptiveScalingChange} />
-                        <label for="chk-adaptive" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>自适应缩放</label>
+                <div class="advanced-settings">
+                    <div class={`checkbox-row ${pendingConfig.adaptiveScaling !== undefined ? 'config-changed' : ''}`}>
+                        <input
+                            type="checkbox"
+                            id="chk-adaptive"
+                            checked={adaptiveScaling}
+                            onChange={handleAdaptiveScalingChange}
+                        />
+                        <label for="chk-adaptive">自适应缩放</label>
                     </div>
 
-                    {/* ROI匹配 */}
-                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-                        <input type="checkbox" id="chk-roi" checked={roiEnabled} onChange={handleRoiEnabledChange} />
-                        <label for="chk-roi" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>ROI区域匹配</label>
+                    <div class={`checkbox-row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`}>
+                        <input
+                            type="checkbox"
+                            id="chk-roi"
+                            checked={roiEnabled}
+                            onChange={handleRoiEnabledChange}
+                        />
+                        <label for="chk-roi">ROI区域匹配</label>
                     </div>
 
-                    {/* 早期终止 */}
-                    <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-                        <input type="checkbox" id="chk-early" checked={earlyTermination} onChange={handleEarlyTerminationChange} />
-                        <label for="chk-early" style={{ margin:0, cursor:'pointer', fontSize: '11px' }}>早期终止优化</label>
+                    <div class={`checkbox-row ${pendingConfig.earlyTermination !== undefined ? 'config-changed' : ''}`}>
+                        <input
+                            type="checkbox"
+                            id="chk-early"
+                            checked={earlyTermination}
+                            onChange={handleEarlyTerminationChange}
+                        />
+                        <label for="chk-early">早期终止优化</label>
                     </div>
 
-                    {/* 匹配算法 */}
-                    <div class="row" style={{ marginBottom: '5px' }}>
-                        <label style={{ fontSize: '11px' }}>匹配算法</label>
-                        <select value={matchingMethod} onChange={handleMatchingMethodChange} style={{width:'100%', background:'#222', color:'white', border:'1px solid #444', fontSize: '11px' }}>
+                    <div class={`row ${pendingConfig.matchingMethod !== undefined ? 'config-changed' : ''}`} style={{ marginBottom: '5px' }}>
+                        <label style={{ fontSize: 'var(--font-size-sm)' }}>匹配算法</label>
+                        <select value={matchingMethod} onChange={handleMatchingMethodChange}>
                             <option value="TM_CCOEFF_NORMED">标准相关系数</option>
                             <option value="TM_SQDIFF_NORMED">平方差匹配</option>
                             <option value="TM_CCORR_NORMED">相关性匹配</option>
@@ -283,20 +295,24 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             )}
 
             {/* Debug 开关 */}
-            <div class="row" style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '5px' }}>
-                <input type="checkbox" id="chk-debug" checked={isDebug} onChange={handleDebugChange} />
-                <label for="chk-debug" style={{ margin:0, cursor:'pointer' }}>开启视觉调试 (Debug)</label>
+            <div class={`checkbox-row ${pendingConfig.debugMode !== undefined ? 'config-changed' : ''}`}>
+                <input
+                    type="checkbox"
+                    id="chk-debug"
+                    checked={isDebug}
+                    onChange={handleDebugChange}
+                />
+                <label for="chk-debug">开启视觉调试 (Debug)</label>
             </div>
 
             <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
-                <button class="bgi-btn" style={{ flex: 1 }} onClick={onCrop}>📷 截图</button>
-                <button class="bgi-btn" style={{ flex: 1 }} onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
+                <button class="bgi-btn" onClick={onCrop}>📷 截图</button>
+                <button class="bgi-btn" onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
             </div>
 
             <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
                 <button
-                    class="bgi-btn"
-                    style={{ flex: 1, background: '#2196F3' }}
+                    class="bgi-btn info"
                     onClick={() => setShowPerformancePanel(!showPerformancePanel)}
                 >
                     📊 {showPerformancePanel ? '隐藏性能监控' : '显示性能监控'}
@@ -307,15 +323,10 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
             {hasUnsavedChanges && (
                 <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
                     <button
-                        class="bgi-btn"
-                        style={{
-                            flex: 1,
-                            background: '#FF9800',
-                            animation: 'pulse 2s infinite'
-                        }}
+                        class="bgi-btn warning config-save-btn"
                         onClick={handleSaveConfig}
                     >
-                        💾 保存配置更改
+                        💾 保存配置更改 ({Object.keys(pendingConfig).length} 项)
                     </button>
                 </div>
             )}
