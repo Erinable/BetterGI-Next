@@ -2,9 +2,10 @@
 import { Engine } from './core/engine';
 import { OverlayManager } from './ui/overlay';
 import { AutoSkipTask } from './modules/tasks/demo-task';
+import { logger } from './core/logging/logger';
 
 (async function() {
-    console.log('[BetterGi] Initializing...');
+    logger.info('app', 'BetterGi initializing...');
 
     // 1. 初始化引擎
     const engine = new Engine();

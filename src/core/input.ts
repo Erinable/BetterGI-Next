@@ -1,4 +1,5 @@
 import { RandomUtils } from '../utils/math';
+import { logger } from './logging/logger';
 
 export class InputSystem {
     private state: any = {
@@ -20,7 +21,7 @@ export class InputSystem {
         return new Promise<void>((resolve) => {
             const check = () => {
                 if (this.channel) {
-                    console.log('[BGI] Input Connected via Better-xCloud');
+                    logger.info('input', 'Connected via Better-xCloud');
                     resolve();
                 } else {
                     setTimeout(check, 1000);

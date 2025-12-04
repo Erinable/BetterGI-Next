@@ -76,7 +76,6 @@ export class Engine {
 
             bus.emit(EVENTS.ENGINE_READY);
             logger.info('engine', 'Engine Core v2.0 Ready');
-            console.log('[BetterGi] Engine Core v2.0 Ready');
 
         } catch (error) {
             logger.error('engine', 'Failed to initialize engine', { error });
@@ -110,7 +109,6 @@ export class Engine {
                 logger.info('engine', `Task ${task.name} registered successfully`);
             } catch (e) {
                 logger.error('engine', `Failed to register task ${task.name}`, { error: e });
-                console.error(`[Engine] Failed to register task ${task.name}:`, e);
             }
 
             // 通知 UI 更新
@@ -134,7 +132,6 @@ export class Engine {
             const task = this.tasks.get(name);
             if (!task) {
                 logger.error('engine', `Task not found: ${name}`);
-                console.error(`[Engine] Task not found: ${name}`);
                 return;
             }
 
@@ -211,7 +208,6 @@ export class Engine {
                 templateCacheSize: configManager.get('templateCacheSize')
             };
 
-            console.log('[Engine] Config updated:', this.config);
             logger.info('engine', 'Configuration updated successfully', { config: this.config });
 
             // 更新性能监控配置
@@ -242,7 +238,7 @@ export class Engine {
     }
 
 	async handleCrop(rect: { x: number, y: number, w: number, h: number }) {
-        console.log('[Engine] Processing crop request...', rect);
+        logger.info('engine', 'Processing crop request', { rect });
 
         // 1. 尝试截图
         const templateData = await this.vision.captureTemplate(rect);
@@ -253,7 +249,7 @@ export class Engine {
             // 额外检查：如果截图全是透明或纯黑，可能是截到了无效区域
             // 这里简单检查一下 data 长度确保不是空的
             if (templateData.data.length > 0) {
-                console.log('[Engine] Crop success, starting preview.');
+                logger.info('engine', 'Crop successful, starting preview');
                 bus.emit(EVENTS.STATUS_UPDATE, '截图成功! 已复制到剪贴板');
                 this.startPreviewTask(templateData);
                 return;
@@ -261,7 +257,7 @@ export class Engine {
         }
 
         // --- 失败分支 ---
-        console.warn('[Engine] Crop failed: No valid video stream found.');
+        logger.warn('engine', 'Crop failed: No valid video stream found');
         bus.emit(EVENTS.STATUS_UPDATE, '截图失败 (无视频流)');
 
         // [关键修复] 移除 setTimeout，直接同步调用 alert
@@ -278,7 +274,7 @@ export class Engine {
             running: true,
             ctx: { vision: this.vision, algo: this.algo } as any,
             start: () => {
-                console.log('[Engine] Starting Preview Mode...');
+                logger.info('engine', 'Starting preview mode');
 
                 const loop = async () => {
                     if (!previewTask.running) return;
@@ -313,14 +309,6 @@ export class Engine {
                                 const screenY = info.offsetY + (res.y * info.scaleY);
                                 const screenW = res.w * info.scaleX;
                                 const screenH = res.h * info.scaleY;
-
-                                // 调试日志
-                                console.log(`[Preview Debug] 🎯 Score: ${(res.score*100).toFixed(1)}% | ⚡ ${cost.toFixed(0)}ms
-  -------------------------------------------------------------
-  1. 🖼️ Raw (Vision):  x=${res.x} y=${res.y} w=${res.w} h=${res.h}
-  2. 📏 Map (Info):    scale=${info.scaleX.toFixed(3)} offset=(${info.offsetX}, ${info.offsetY})
-  3. 📺 UI (Screen):   x=${screenX.toFixed(0)} y=${screenY.toFixed(0)} w=${screenW.toFixed(0)} h=${screenH.toFixed(0)}
-  -------------------------------------------------------------`);
 
                                 // 这里的 scaleX/Y 已经是最终缩放了 (Worker 内部处理了 downsample 和 scales 的反算)
                                 // 但有一个细节：多尺度匹配(scales)返回的 res.w/h 是原始模板大小

@@ -1,5 +1,6 @@
 // src/modules/tasks/demo-task.ts
 import { BaseTask } from '../../core/base-task';
+import { logger } from '../../core/logging/logger';
 
 export class AutoSkipTask extends BaseTask {
     constructor() {
@@ -11,7 +12,7 @@ export class AutoSkipTask extends BaseTask {
     async onRegister() {
         // 这是一个示例 Base64，实际开发中你需要用截图工具获取
         await this.ctx.algo.register('dialog_icon', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==');
-		console.log('[Task] AutoSkipTask assets loaded');
+		logger.info('task', 'AutoSkipTask assets loaded');
     }
 
     async onLoop(screen: ImageData) {
@@ -21,8 +22,8 @@ export class AutoSkipTask extends BaseTask {
         });
 
         if (res) {
-            console.log(`[Task] Found dialog at (${res.x}, ${res.y}), skipping...`);
-            
+            logger.info('task', `Found dialog at (${res.x}, ${res.y}), skipping...`);
+
             // 2. 如果找到了，按下 'A' 键（Xbox 手柄确认键）
             await this.ctx.input.tap('A');
             

@@ -3,6 +3,7 @@ import { InputSystem } from './input';
 import { VisionSystem } from './vision';
 import { AlgoSystem } from './algo';
 import { Engine } from './engine';
+import { logger } from './logging/logger';
 
 export interface TaskContext {
     input: InputSystem;
@@ -27,7 +28,7 @@ export abstract class BaseTask {
     start() {
         if (this.running) return;
         this.running = true;
-        console.log(`[Task] ${this.name} Started`);
+        logger.info('task', `${this.name} started`);
 
         const loop = async () => {
             if (!this.running) return;
@@ -43,7 +44,7 @@ export abstract class BaseTask {
                     await this.onLoop(imgData);
                 }
             } catch (e) {
-                console.error(`[Task] ${this.name} Error:`, e);
+                logger.error('task', `${this.name} error`, { error: e });
             }
 
             const dt = performance.now() - t0;
@@ -58,7 +59,7 @@ export abstract class BaseTask {
 
     stop() {
         this.running = false;
-        console.log(`[Task] ${this.name} Stopped`);
+        logger.info('task', `${this.name} stopped`);
     }
 
     /**

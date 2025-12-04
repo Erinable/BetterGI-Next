@@ -39,6 +39,10 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const [matchingMethod, setMatchingMethod] = useState('TM_CCOEFF_NORMED');
     const [earlyTermination, setEarlyTermination] = useState(true);
 
+    // 配置管理状态
+    const [pendingConfig, setPendingConfig] = useState<any>({});
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
     useEffect(() => {
         const updateStatus = (msg: string) => setStatus(msg);
         bus.on(EVENTS.STATUS_UPDATE, updateStatus);
@@ -80,55 +84,73 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
     const handleThresholdChange = (e: any) => {
         const val = parseFloat(e.target.value);
         setThreshold(val);
-        sendConfig({ threshold: val });
+        setPendingConfig(prev => ({ ...prev, threshold: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleQualityChange = (e: any) => {
         const val = parseFloat(e.target.value);
         setDownsample(val);
-        sendConfig({ downsample: val });
+        setPendingConfig(prev => ({ ...prev, downsample: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleScaleChange = (e: any) => {
         const mode = e.target.value;
         setScaleMode(mode);
-        
+
         // 将模式转换为具体的比例数组
         let scales = [1.0];
         if (mode === 'NORMAL') scales = [0.9, 1.0, 1.1];
         if (mode === 'WIDE') scales = [0.8, 0.9, 1.0, 1.1, 1.2]; // 范围更广但更慢
-        
-        sendConfig({ scales });
+
+        setPendingConfig(prev => ({ ...prev, scales }));
+        setHasUnsavedChanges(true);
     };
 
     const handleDebugChange = (e: any) => {
         const val = e.target.checked;
         setIsDebug(val);
-        sendConfig({ debugMode: val });
+        setPendingConfig(prev => ({ ...prev, debugMode: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleAdaptiveScalingChange = (e: any) => {
         const val = e.target.checked;
         setAdaptiveScaling(val);
-        sendConfig({ adaptiveScaling: val });
+        setPendingConfig(prev => ({ ...prev, adaptiveScaling: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleRoiEnabledChange = (e: any) => {
         const val = e.target.checked;
         setRoiEnabled(val);
-        sendConfig({ roiEnabled: val });
+        setPendingConfig(prev => ({ ...prev, roiEnabled: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleMatchingMethodChange = (e: any) => {
         const val = e.target.value;
         setMatchingMethod(val);
-        sendConfig({ matchingMethod: val });
+        setPendingConfig(prev => ({ ...prev, matchingMethod: val }));
+        setHasUnsavedChanges(true);
     };
 
     const handleEarlyTerminationChange = (e: any) => {
         const val = e.target.checked;
         setEarlyTermination(val);
-        sendConfig({ earlyTermination: val });
+        setPendingConfig(prev => ({ ...prev, earlyTermination: val }));
+        setHasUnsavedChanges(true);
+    };
+
+    // 保存配置的函数
+    const handleSaveConfig = () => {
+        if (Object.keys(pendingConfig).length > 0) {
+            // 发送所有待保存的配置
+            sendConfig(pendingConfig);
+            setPendingConfig({});
+            setHasUnsavedChanges(false);
+        }
     };
 
     return (
@@ -277,6 +299,23 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
                     📊 {showPerformancePanel ? '隐藏性能监控' : '显示性能监控'}
                 </button>
             </div>
+
+            {/* 配置保存按钮 */}
+            {hasUnsavedChanges && (
+                <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
+                    <button
+                        class="bgi-btn"
+                        style={{
+                            flex: 1,
+                            background: '#FF9800',
+                            animation: 'pulse 2s infinite'
+                        }}
+                        onClick={handleSaveConfig}
+                    >
+                        💾 保存配置更改
+                    </button>
+                </div>
+            )}
 
             <button
                 class={`bgi-btn ${running ? 'danger' : 'primary'}`}
