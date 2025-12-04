@@ -4,6 +4,20 @@ export interface AppConfig {
     autoSkip: boolean;
     debugMode: boolean;
     loopInterval: number;
+    // 性能优化配置
+    downsample: number;
+    scales: number[];
+    adaptiveScaling: boolean;
+    roiEnabled: boolean;
+    roiRegions: Array<{ x: number, y: number, w: number, h: number, name: string }>;
+    performanceMonitoring: boolean;
+    frameCacheEnabled: boolean;
+    parallelMatching: boolean;
+    maxWorkers: number;
+    // 算法优化配置
+    matchingMethod: 'TM_CCOEFF_NORMED' | 'TM_SQDIFF_NORMED' | 'TM_CCORR_NORMED';
+    earlyTermination: boolean;
+    templateCacheSize: number;
 }
 
 // 默认配置
@@ -12,6 +26,20 @@ const DEFAULT_CONFIG: AppConfig = {
     autoSkip: false,
     debugMode: false,
     loopInterval: 1000,
+    // 性能优化默认值
+    downsample: 0.33, // 提高降采样率从 0.5 到 0.33
+    scales: [1.0], // 默认单尺度，失败后自适应扩展
+    adaptiveScaling: true, // 启用自适应尺度
+    roiEnabled: false, // 默认关闭ROI
+    roiRegions: [],
+    performanceMonitoring: true, // 启用性能监控
+    frameCacheEnabled: true, // 启用帧缓存
+    parallelMatching: false, // 默认关闭并行匹配
+    maxWorkers: 2, // 最大Worker数量
+    // 算法优化配置
+    matchingMethod: 'TM_CCOEFF_NORMED',
+    earlyTermination: true, // 启用早期终止
+    templateCacheSize: 50, // 模板缓存大小
 };
 
 export class ConfigManager {

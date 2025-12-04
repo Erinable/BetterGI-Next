@@ -1,4 +1,11 @@
 import { bus, EVENTS } from '../utils/event-bus';
+import { performanceMonitor } from './performance-monitor';
+
+interface FrameCache {
+    data: ImageData;
+    timestamp: number;
+    hash: string;
+}
 
 export class VisionSystem {
     private worker: Worker;
@@ -8,23 +15,58 @@ export class VisionSystem {
     private callbacks = new Map<number, Function>();
     private msgId = 0;
 
+    // 性能优化相关
+    private frameCache = new Map<string, FrameCache>();
+    private maxCacheSize = 10;
+    private cacheExpiryTime = 100; // 100ms
+    private lastFrameHash = '';
+    private performanceEnabled = true;
+
     constructor() {
         const blob = new Blob([__WORKER_CODE__], { type: 'application/javascript' });
         this.worker = new Worker(URL.createObjectURL(blob));
-        
+
         this.worker.onmessage = (e) => {
             const { id, type, result } = e.data;
             if (type === 'INIT_DONE') {
                 console.log('[BGI] Vision Worker Ready');
+                // 请求Worker统计信息
+                this.getWorkerStats();
             } else if (type === 'MATCH_RESULT') {
                 if (this.callbacks.has(id)) {
+                    // 记录缓存命中/未命中
+                    if (result.cacheHit) {
+                        performanceMonitor.recordCacheHit();
+                    } else {
+                        performanceMonitor.recordCacheMiss();
+                    }
+
+                    // 结束性能测量
+                    const performanceData = {
+                        score: result.score,
+                        bestScale: result.bestScale,
+                        usedROI: result.usedROI,
+                        templateWidth: result.templateWidth,
+                        templateHeight: result.templateHeight,
+                        adaptiveScaling: result.adaptiveScaling
+                    };
+
+                    performanceMonitor.recordMatch(result.performance?.duration || 0, performanceData);
+
                     this.callbacks.get(id)!(result);
                     this.callbacks.delete(id);
                 }
+            } else if (type === 'STATS') {
+                // Worker统计信息回调
+                console.log('[BGI] Worker Stats:', result.stats);
+                bus.emit(EVENTS.PERFORMANCE_WORKER_STATS, result.stats);
             }
         };
 
         setInterval(() => this.scanVideo(), 1000);
+
+        // 定期清理缓存
+        setInterval(() => this.cleanFrameCache(), 5000);
     }
 
     private scanVideo() {
@@ -69,8 +111,36 @@ export class VisionSystem {
     }
 
     /**
+     * 生成帧哈希
+     */
+    private generateFrameHash(imageData: ImageData): string {
+        // 简单的哈希算法：采样部分像素
+        const data = imageData.data;
+        let hash = '';
+        const step = Math.max(1, Math.floor(data.length / 1000)); // 采样1000个点
+
+        for (let i = 0; i < data.length; i += step * 4) {
+            hash += data[i].toString(16).padStart(2, '0');
+        }
+
+        return hash;
+    }
+
+    /**
+     * 清理过期帧缓存
+     */
+    private cleanFrameCache() {
+        const now = Date.now();
+        for (const [key, frame] of this.frameCache.entries()) {
+            if (now - frame.timestamp > this.cacheExpiryTime || this.frameCache.size > this.maxCacheSize) {
+                this.frameCache.delete(key);
+            }
+        }
+    }
+
+    /**
      * 获取当前画面 (主循环使用)
-     * 策略：始终从 Video 读取像素，但调整 Canvas 尺寸以匹配 Video 的原始分辨率
+     * 策略：支持帧缓存以提高性能
      */
     getImageData() {
         const ctx = this.getSourceContext();
@@ -82,13 +152,43 @@ export class VisionSystem {
 
         if (w === 0 || h === 0) return null;
 
+        // 记录帧捕获
+        if (this.performanceEnabled) {
+            performanceMonitor.recordFrame();
+        }
+
         if (this.canvas.width !== w || this.canvas.height !== h) {
             this.canvas.width = w; this.canvas.height = h;
         }
 
         try {
             this.ctx.drawImage(source, 0, 0, w, h);
-            return this.ctx.getImageData(0, 0, w, h);
+            const imageData = this.ctx.getImageData(0, 0, w, h);
+
+            // 检查缓存
+            const frameHash = this.generateFrameHash(imageData);
+            if (this.lastFrameHash === frameHash) {
+                // 帧未变化，返回缓存（如果启用缓存）
+                const cachedFrame = Array.from(this.frameCache.values()).find(
+                    f => f.hash === frameHash && Date.now() - f.timestamp < this.cacheExpiryTime
+                );
+                if (cachedFrame) {
+                    return cachedFrame.data;
+                }
+            }
+
+            this.lastFrameHash = frameHash;
+
+            // 添加到缓存
+            if (this.frameCache.size < this.maxCacheSize) {
+                this.frameCache.set(frameHash, {
+                    data: imageData,
+                    timestamp: Date.now(),
+                    hash: frameHash
+                });
+            }
+
+            return imageData;
         } catch (e) {
             return null;
         }
@@ -160,14 +260,87 @@ export class VisionSystem {
 
     async match(screen: ImageData, template: ImageData, options: any) {
         if (!screen) return null;
+
+        // 开始性能测量
+        const perfMeasurement = this.performanceEnabled ? performanceMonitor.startMatch() : null;
+
         return new Promise<any>(resolve => {
             const id = ++this.msgId;
-            this.callbacks.set(id, resolve);
+            this.callbacks.set(id, (result: any) => {
+                // 结束性能测量
+                if (perfMeasurement) {
+                    perfMeasurement.end(result);
+                }
+                resolve(result);
+            });
+
+            // 构建增强的配置对象
+            const enhancedConfig = {
+                ...options,
+                // ROI配置
+                roi: {
+                    enabled: options.roiEnabled || false,
+                    regions: options.roiRegions || []
+                },
+                // 性能配置
+                adaptiveScaling: options.adaptiveScaling !== false,
+                earlyTermination: options.earlyTermination !== false,
+                matchingMethod: options.matchingMethod || 'TM_CCOEFF_NORMED',
+                // 缓存配置
+                cacheEnabled: options.frameCacheEnabled !== false
+            };
+
             const transfer = [screen.data.buffer];
             this.worker.postMessage({
                 id, type: 'MATCH',
-                payload: { image: screen, template, config: options }
+                payload: { image: screen, template, config: enhancedConfig }
             }, transfer);
         });
+    }
+
+    /**
+     * 获取Worker统计信息
+     */
+    getWorkerStats() {
+        this.worker.postMessage({ type: 'GET_STATS' });
+    }
+
+    /**
+     * 清理Worker缓存
+     */
+    clearWorkerCache() {
+        this.worker.postMessage({ type: 'CLEAR_CACHE' });
+    }
+
+    /**
+     * 启用/禁用性能监控
+     */
+    setPerformanceEnabled(enabled: boolean) {
+        this.performanceEnabled = enabled;
+        performanceMonitor.setEnabled(enabled);
+    }
+
+    /**
+     * 获取性能指标
+     */
+    getPerformanceMetrics() {
+        return performanceMonitor.getPerformanceStats();
+    }
+
+    /**
+     * 重置性能指标
+     */
+    resetPerformanceMetrics() {
+        performanceMonitor.reset();
+        this.cleanFrameCache();
+        this.clearWorkerCache();
+    }
+
+    /**
+     * 设置ROI区域
+     */
+    setROIRegions(regions: Array<{ x: number, y: number, w: number, h: number, name: string }>) {
+        // ROI配置通过match方法的options参数传递
+        bus.emit(EVENTS.CONFIG_UPDATE, { roiRegions: regions });
     }
 }

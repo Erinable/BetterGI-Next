@@ -26,4 +26,9 @@ export const EVENTS = {
     CONFIG_UPDATE: 'config:update',
     CROP_REQUEST: 'crop:request',
     TASK_LIST_UPDATE: 'TASK_LIST_UPDATE',
+    // 性能相关事件
+    PERFORMANCE_WORKER_STATS: 'performance:worker_stats',
+    PERFORMANCE_METRICS_UPDATE: 'performance:metrics_update',
+    PERFORMANCE_CACHE_HIT: 'performance:cache_hit',
+    PERFORMANCE_CACHE_MISS: 'performance:cache_miss',
 };
