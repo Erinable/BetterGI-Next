@@ -60,18 +60,9 @@ export function App({ initialPos, onPosChange, onClose, onCrop }: AppProps) {
         const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
         bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
 
-        // 初始化时发送当前保存的配置给引擎（只发送一次）
-        sendConfig({
-            threshold: configManager.get('threshold'),
-            downsample: configManager.get('downsample'),
-            scales: configManager.get('scales'),
-            debugMode: configManager.get('debugMode'),
-            adaptiveScaling: configManager.get('adaptiveScaling'),
-            roiEnabled: configManager.get('roiEnabled'),
-            matchingMethod: configManager.get('matchingMethod'),
-            earlyTermination: configManager.get('earlyTermination'),
-            performanceMonitoring: configManager.get('performanceMonitoring')
-        });
+        // 注意：不再初始化时发送配置
+        // 引擎在构造函数中已经从configManager读取了配置
+        // UI只应该在用户手动更改配置时才发送更新
 
         return () => {
             bus.off(EVENTS.STATUS_UPDATE, updateStatus);
