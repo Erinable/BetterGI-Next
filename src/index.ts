@@ -26,12 +26,37 @@ import { logger } from './core/logging/logger';
         enumerable: true
     });
 
+    // 暴露简单的状态检查工具到全局
+    try {
+        globalObj.BetterGiDiag = {
+            check: () => {
+                // 使用 unsafeWindow 来检查真实的页面状态
+                const realWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+                const status = {
+                    hasBXExposed: !!realWin.BX_EXPOSED,
+                    hasInputChannel: !!realWin.BX_EXPOSED?.inputChannel,
+                    inputChannelType: realWin.BX_EXPOSED?.inputChannel?.constructor?.name,
+                    usingUnsafeWindow: typeof unsafeWindow !== 'undefined',
+                    timestamp: new Date().toISOString()
+                };
+                console.log('Better-xCloud Status:', status);
+                return status;
+            }
+        };
+
+        logger.info('app', '🔍 Simple diagnostic tools exposed globally');
+
+    } catch (e) {
+        logger.warn('app', 'Could not load diagnostic tools', { error: e });
+    }
+
     // 添加调试日志确认暴露成功
     console.log('✅ BetterGi v2.0 已加载到全局:', {
         BetterGi: !!globalObj.BetterGi,
         engine: !!globalObj.BetterGi.engine,
         input: !!globalObj.BetterGi.engine?.input,
-        vision: !!globalObj.BetterGi.engine?.vision
+        vision: !!globalObj.BetterGi.engine?.vision,
+        diagnostic: !!globalObj.BetterGiDiag
     });
 
     // 3. 初始化 UI
@@ -46,8 +71,16 @@ import { logger } from './core/logging/logger';
         console.log('✅ BetterGi 确认可用:', {
             hasGlobal: !!globalObj.BetterGi,
             hasEngine: !!globalObj.BetterGi?.engine,
-            methods: Object.getOwnPropertyNames(Object.getPrototypeOf(globalObj.BetterGi.engine))
+            methods: Object.getOwnPropertyNames(Object.getPrototypeOf(globalObj.BetterGi.engine)),
+            hasDiagnostic: !!globalObj.BetterGiDiag
         });
+
+        // 提供控制台使用提示
+        console.log('🎮 BetterGi Console Commands:');
+        console.log('  - window.BetterGiDiag.check() - 快速检查BX_EXPOSED状态');
+        console.log('  - window.BetterGi.engine.input.tap(\'A\', 200) - 测试按键');
+        console.log('  - window.BetterGi.engine.listTasks() - 列出所有任务');
+
     }, 2000);
 
 })();

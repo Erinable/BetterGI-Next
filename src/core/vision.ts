@@ -27,6 +27,9 @@ export class VisionSystem {
         const blob = new Blob([__WORKER_CODE__], { type: 'application/javascript' });
         this.worker = new Worker(URL.createObjectURL(blob));
 
+        // 发送初始化消息给Worker
+        this.worker.postMessage({ type: 'INIT' });
+
         this.worker.onmessage = (e) => {
             const { id, type, result } = e.data;
             if (type === 'INIT_DONE') {

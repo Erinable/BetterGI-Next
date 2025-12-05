@@ -17,24 +17,24 @@ export class AutoSkipTask extends BaseTask {
     }
 
     async onLoop(screen: ImageData) {
-        // 1. 查找屏幕上是否有对话图标
+        // 1. 查找屏幕上是否有对话图标，使用 UI 面板上的配置参数
         const res = await this.ctx.algo.findAsync(screen, 'auto_skip_dialog_icon', {
-            threshold: 0.9
+            threshold: this.ctx.engine.config.threshold, // 使用 UI 面板配置的阈值
+            downsample: this.ctx.engine.config.downsample
         });
         const res1 = await this.ctx.algo.findAsync(screen, 'auto_skip_linxing_icon', {
-            threshold: 0.9
+            threshold: this.ctx.engine.config.threshold, // 使用 UI 面板配置的阈值
+            downsample: this.ctx.engine.config.downsample
         });
 
         if (res || res1) {
-            logger.info('task', `Found dialog , skipping...`);
+            logger.info('task', `Found dialog (confidence: ${Math.max(res?.score || 0, res1?.score || 0).toFixed(3)}, threshold: ${this.ctx.engine.config.threshold}, downsample: ${this.ctx.engine.config.downsample}), skipping...`);
 
             // 2. 如果找到了，按下 'A' 键（Xbox 手柄确认键）
             await this.ctx.input.tap('A');
 
             // 3. 稍微等待，防止连点过快
             await this.sleep(200);
-        } else {
-            // 没找到，啥也不做，等待下一次循环
         }
     }
 }
