@@ -60,22 +60,112 @@ export class Engine {
         const endMeasurement = performanceMonitor.startMeasurement('engine_init', 'system');
 
         try {
-            // 初始化存储管理器
-            await storageManager.initialize();
-            logger.info('engine', 'Storage manager initialized');
+            logger.info('engine', '🚀 BetterGi Engine v2.0 初始化开始', {
+                pageUrl: window.location.href,
+                userAgent: navigator.userAgent.substring(0, 100),
+                hasBXExposed: !!window.BX_EXPOSED
+            });
 
-            await this.input.init();
-            logger.info('engine', 'Input system initialized');
+            // 初始化存储管理器
+            logger.info('engine', '📁 初始化存储管理器...');
+            await storageManager.initialize();
+            logger.info('engine', '✅ 存储管理器初始化完成');
+
+            // 初始化输入系统（包含详细状态检查）
+            logger.info('engine', '🎮 初始化输入系统...');
+            logger.info('engine', '等待 Better-xCloud inputChannel 连接...');
+
+            try {
+                await this.input.init();
+                logger.info('engine', '✅ 输入系统初始化完成');
+
+                // 输入系统初始化成功后的详细信息
+                const inputDetails = {
+                    channelConnected: !!this.input.channel,
+                    channelType: this.input.channel?.constructor?.name || 'Unknown',
+                    supportedKeys: Object.keys(this.input.state).filter(key => this.input.state[key] !== undefined)
+                };
+                logger.info('engine', '📊 输入系统详细信息', inputDetails);
+
+            } catch (inputError) {
+                logger.error('engine', '❌ 输入系统初始化失败', { error: inputError.message });
+                logger.warn('engine', '⚠️ 继续初始化其他系统，但输入功能将不可用');
+                // 不抛出错误，允许其他系统继续初始化
+            }
+
+            // 检查视觉系统状态
+            logger.info('engine', '👁️ 检查视觉系统状态...');
+            const visionStatus = {
+                worker: !!this.vision.worker,
+                workerReady: false,
+                canvas: !!this.vision.canvas,
+                context: !!this.vision.ctx,
+                videoConnected: !!this.vision.video
+            };
+
+            // 检查 Worker 是否就绪
+            if (visionStatus.worker) {
+                // 发送测试消息检查 Worker 状态
+                this.vision.worker.postMessage({ type: 'INIT' });
+                visionStatus.workerReady = true;
+            }
+
+            logger.info('engine', '📊 视觉系统状态', visionStatus);
+
+            // 检查算法系统状态
+            logger.info('engine', '🧠 检查算法系统状态...');
+            const algoStatus = {
+                visionConnected: !!this.algo.vision,
+                registeredTemplates: 0, // 将在模板注册后更新
+                ready: !!this.algo.vision && !!this.vision.worker
+            };
+            logger.info('engine', '📊 算法系统状态', algoStatus);
 
             // 监听 UI 事件
+            logger.info('engine', '🔗 设置事件监听器...');
             bus.on(EVENTS.TASK_START, (name: string) => this.startTask(name));
             bus.on(EVENTS.TASK_STOP, () => this.stopTask());
             bus.on(EVENTS.CONFIG_UPDATE, (cfg: any) => this.updateConfig(cfg));
-            // [新增] 监听截图请求
             bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
+            logger.info('engine', '✅ 事件监听器设置完成');
 
+            // 模块就绪状态总结
+            const moduleStatus = {
+                storage: true,
+                input: !!this.input.channel,
+                vision: visionStatus.workerReady,
+                algorithm: algoStatus.ready,
+                events: true
+            };
+
+            const readyCount = Object.values(moduleStatus).filter(Boolean).length;
+            const totalCount = Object.keys(moduleStatus).length;
+
+            if (readyCount === totalCount) {
+                logger.info('engine', '🎉 所有模块初始化成功！');
+            } else {
+                logger.warn('engine', `⚠️ 部分模块初始化失败 (${readyCount}/${totalCount})，功能可能受限`);
+            }
+
+            logger.info('engine', '📈 模块就绪状态', moduleStatus);
+
+            // 发送引擎就绪事件
             bus.emit(EVENTS.ENGINE_READY);
             logger.info('engine', 'Engine Core v2.0 Ready');
+
+            // 暴露调试信息到全局
+            (window as any).BetterGiEngineDebug = {
+                status: moduleStatus,
+                input: {
+                    connected: !!this.input.channel,
+                    state: { ...this.input.state },
+                    channel: !!this.input.channel
+                },
+                vision: visionStatus,
+                algorithm: algoStatus
+            };
+
+            logger.info('engine', '🔧 调试信息已暴露到 window.BetterGiEngineDebug');
 
         } catch (error) {
             logger.error('engine', 'Failed to initialize engine', { error });
