@@ -1,6 +1,18 @@
 // src/core/config-manager.ts
 import { logger } from './logging/logger';
 
+// ROI 区域定义
+export interface ROIRegion {
+    id: string;              // 唯一标识
+    name: string;            // 用户命名 (如: "对话框区域")
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    scope: 'global' | string;  // 'global' 或任务名 (如 'Preview', 'AutoSkipTask')
+    templateName?: string;     // 可选: 模板级 ROI (如 'auto_skip_dialog_icon')
+}
+
 // 定义配置的形状
 export interface AppConfig {
     threshold: number;
@@ -12,7 +24,7 @@ export interface AppConfig {
     scales: number[];
     adaptiveScaling: boolean;
     roiEnabled: boolean;
-    roiRegions: Array<{ x: number, y: number, w: number, h: number, name: string }>;
+    roiRegions: ROIRegion[];
     performanceMonitoring: boolean;
     frameCacheEnabled: boolean;
     parallelMatching: boolean;
@@ -30,19 +42,19 @@ const DEFAULT_CONFIG: AppConfig = {
     debugMode: false,
     loopInterval: 1000,
     // 性能优化默认值
-    downsample: 0.33, // 提高降采样率从 0.5 到 0.33
-    scales: [1.0], // 默认单尺度，失败后自适应扩展
-    adaptiveScaling: true, // 启用自适应尺度
-    roiEnabled: false, // 默认关闭ROI
+    downsample: 0.33,
+    scales: [1.0],
+    adaptiveScaling: true,
+    roiEnabled: false,
     roiRegions: [],
-    performanceMonitoring: true, // 启用性能监控
-    frameCacheEnabled: true, // 启用帧缓存
-    parallelMatching: false, // 默认关闭并行匹配
-    maxWorkers: 2, // 最大Worker数量
+    performanceMonitoring: true,
+    frameCacheEnabled: true,
+    parallelMatching: false,
+    maxWorkers: 2,
     // 算法优化配置
     matchingMethod: 'TM_CCOEFF_NORMED',
-    earlyTermination: true, // 启用早期终止
-    templateCacheSize: 50, // 模板缓存大小
+    earlyTermination: true,
+    templateCacheSize: 50,
 };
 
 export class ConfigManager {
@@ -145,7 +157,99 @@ export class ConfigManager {
             return false;
         }
     }
+
+    // ========== ROI 管理方法 ==========
+
+    /**
+     * 添加 ROI 区域
+     */
+    addROI(region: Omit<ROIRegion, 'id'>): ROIRegion {
+        const newRegion: ROIRegion = {
+            ...region,
+            id: `roi_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        };
+        this.config.roiRegions.push(newRegion);
+        this.saveConfig();
+        logger.info('config', 'Added ROI region', { region: newRegion });
+        return newRegion;
+    }
+
+    /**
+     * 删除 ROI 区域
+     */
+    removeROI(id: string): boolean {
+        const index = this.config.roiRegions.findIndex(r => r.id === id);
+        if (index !== -1) {
+            const removed = this.config.roiRegions.splice(index, 1)[0];
+            this.saveConfig();
+            logger.info('config', 'Removed ROI region', { region: removed });
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 清空所有 ROI 区域
+     */
+    clearAllROI(): void {
+        this.config.roiRegions = [];
+        this.saveConfig();
+        logger.info('config', 'Cleared all ROI regions');
+    }
+
+    /**
+     * 获取指定模板/任务的 ROI，支持多级 fallback
+     * 优先级: 模板级 ROI > 任务级 ROI > 全局 ROI
+     * @param taskName 任务名 (如 'Preview', 'AutoSkipTask')
+     * @param templateName 可选，模板名 (如 'auto_skip_dialog_icon')
+     */
+    getROIForTemplate(taskName: string, templateName?: string): ROIRegion | null {
+        const regions = this.config.roiRegions;
+
+        // 1. 模板级 ROI (最高优先)
+        if (templateName) {
+            const templateROI = regions.find(r =>
+                r.scope === taskName && r.templateName === templateName
+            );
+            if (templateROI) return templateROI;
+        }
+
+        // 2. 任务级 ROI
+        const taskROI = regions.find(r =>
+            r.scope === taskName && !r.templateName
+        );
+        if (taskROI) return taskROI;
+
+        // 3. 全局 ROI (最低优先)
+        const globalROI = regions.find(r => r.scope === 'global');
+        return globalROI || null;
+    }
+
+    /**
+     * 获取任务的所有 ROI 区域 (包含全局)
+     */
+    getROIsForTask(taskName: string): ROIRegion[] {
+        return this.config.roiRegions.filter(r =>
+            r.scope === taskName || r.scope === 'global'
+        );
+    }
+
+    /**
+     * 按 scope 分组获取 ROI
+     */
+    getROIsGroupedByScope(): Map<string, ROIRegion[]> {
+        const grouped = new Map<string, ROIRegion[]>();
+        for (const region of this.config.roiRegions) {
+            const scope = region.scope;
+            if (!grouped.has(scope)) {
+                grouped.set(scope, []);
+            }
+            grouped.get(scope)!.push(region);
+        }
+        return grouped;
+    }
 }
 
 // 导出单例
 export const config = new ConfigManager();
+
