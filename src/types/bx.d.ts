@@ -12,5 +12,12 @@ declare global {
     interface Window {
         BX_EXPOSED?: BxExposedGlobal;
         cv: any; // OpenCV 全局对象
+        BetterGi?: {
+            engine?: any;
+            vision: {
+                getDisplayInfo: () => { scaleX: number; scaleY: number; offsetX: number; offsetY: number } | null;
+                getPerformanceMetrics?: () => any;
+            };
+        };
     }
 }

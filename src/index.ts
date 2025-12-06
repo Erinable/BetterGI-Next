@@ -12,7 +12,7 @@ import { logger } from './core/logging/logger';
 
     // 2. 确保全局对象正确暴露 - 多重保险
     const globalObj = window as any;
-    globalObj.BetterGi = { engine };
+    globalObj.BetterGi = { engine, vision: engine.vision };
 
     // 备份到多个可能的命名空间
     globalObj._BetterGiDebug = { engine };
@@ -20,7 +20,7 @@ import { logger } from './core/logging/logger';
 
     // 确保不可删除
     Object.defineProperty(globalObj, 'BetterGi', {
-        value: { engine },
+        value: { engine, vision: engine.vision },
         writable: false,
         configurable: false,
         enumerable: true

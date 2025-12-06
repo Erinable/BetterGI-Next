@@ -8,6 +8,7 @@ interface DebugRect {
     x: number; y: number; w: number; h: number;
     score: number; label: string; ts: number;
     cost?: number;
+    isRoiEdit?: boolean; // 新增: 标记是否为 ROI 编辑高亮
 }
 
 interface DebugLayerProps {
@@ -163,31 +164,14 @@ export function DebugLayer({ visible = true }: DebugLayerProps) {
                 </div>
             )}
 
-            {/* 性能监控指示器 */}
-            <div style={{
-                position: 'absolute',
-                top: '10px',
-                right: '10px',
-                background: 'rgba(0, 0, 0, 0.7)',
-                color: performanceStats.averageMatchTime < 200 ? '#0f0' : '#ffaa00',
-                padding: '6px 12px',
-                borderRadius: '15px',
-                fontSize: '11px',
-                fontWeight: 'bold',
-                zIndex: 9992,
-                border: `1px solid ${performanceStats.averageMatchTime < 200 ? '#0f0' : '#ffaa00'}`
-            }}>
-                平均耗时: {performanceStats.averageMatchTime.toFixed(1)}ms
-            </div>
-
             {/* 匹配框 */}
             {rects.map((r, i) => (
                 <div key={i} style={{
                     position: 'absolute',
                     left: r.x, top: r.y, width: r.w, height: r.h,
-                    border: `2px solid ${r.score >= 0.8 ? '#0f0' : 'orange'}`,
-                    boxShadow: `0 0 8px ${r.score >= 0.8 ? '#0f0' : 'orange'}`,
-                    transform: 'translate(-50%, -50%)',
+                    border: `2px solid ${r.isRoiEdit ? '#00bfff' : (r.score >= 0.8 ? '#0f0' : 'orange')}`,
+                    boxShadow: `0 0 8px ${r.isRoiEdit ? '#00bfff' : (r.score >= 0.8 ? '#0f0' : 'orange')}`,
+                    transform: r.isRoiEdit ? 'none' : 'translate(-50%, -50%)',
                     zIndex: 9991
                 }}>
                     <span style={{
@@ -196,7 +180,7 @@ export function DebugLayer({ visible = true }: DebugLayerProps) {
                         fontSize: '10px', padding: '1px 4px', borderRadius: '2px',
                         whiteSpace: 'nowrap'
                     }}>
-                        {(r.score * 100).toFixed(0)}%
+                        {r.isRoiEdit ? r.label : `${(r.score * 100).toFixed(0)}%`}
                     </span>
                 </div>
             ))}

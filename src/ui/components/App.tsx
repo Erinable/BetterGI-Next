@@ -3,17 +3,24 @@ import { useState, useEffect } from 'preact/hooks';
 import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { PerformancePanel } from './PerformancePanel';
+import { ROIEditor } from './ROIEditor';
+import { Modal } from './Modal';
 import { config as configManager, ROIRegion } from '../../core/config-manager';
+import { logger } from '../../core/logging/logger';
+import { LogLevel } from '../../core/logging/types';
 
 interface AppProps {
     initialPos: { x: number; y: number };
     onPosChange: (pos: { x: number; y: number }) => void;
     onClose: () => void;
     onCrop: () => void;
-    onAddRoi?: () => void;
-    showPreview?: boolean;         // 新增: 预览可见性
-    onTogglePreview?: () => void;  // 新增: 切换预览
+    onAddRoi: () => void;
+    showPreview?: boolean;
+    onTogglePreview?: () => void;
 }
+
+// Helper to get pending region from drag event
+const ROI_PENDING_EVENT = 'roi:pending_creation';
 
 export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPreview = true, onTogglePreview }: AppProps) {
     const { pos, startDrag } = useDraggable({
@@ -22,404 +29,453 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
         canDock: false
     });
 
+    // --- State ---
+    const [activeTab, setActiveTab] = useState<'general' | 'roi' | 'system'>('general');
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
 
-    // 性能面板状态
-    const [showPerformancePanel, setShowPerformancePanel] = useState(false);
-    const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
-
-    // 配置项状态 - 从配置管理器读取保存的值
-    const [threshold, setThreshold] = useState(configManager.get('threshold'));
-    const [downsample, setDownsample] = useState(configManager.get('downsample'));
-
-    // 性能相关状态 - 从配置管理器读取保存的值
-    const [performanceStats, setPerformanceStats] = useState<any>(null);
-    const [showAdvanced, setShowAdvanced] = useState(false);
-    const [adaptiveScaling, setAdaptiveScaling] = useState(configManager.get('adaptiveScaling'));
-    const [roiEnabled, setRoiEnabled] = useState(configManager.get('roiEnabled'));
-    const [roiRegions, setRoiRegions] = useState<ROIRegion[]>(configManager.get('roiRegions'));
-    const [matchingMethod, setMatchingMethod] = useState(configManager.get('matchingMethod'));
-    const [earlyTermination, setEarlyTermination] = useState(configManager.get('earlyTermination'));
-
-    // 从配置管理器读取scales并转换为模式
-    const getScaleMode = (scales: number[]) => {
-        if (scales.length === 1) return 'OFF';
-        if (scales.length === 3 && scales[0] === 0.9 && scales[1] === 1.0 && scales[2] === 1.1) return 'NORMAL';
-        if (scales.length === 5) return 'WIDE';
-        return 'OFF';
-    };
-    const [scaleMode, setScaleMode] = useState(getScaleMode(configManager.get('scales')));
-
-    // 配置管理状态 - 使用 Partial<AppConfig> 避免 implicit any
+    // Config State
     const [pendingConfig, setPendingConfig] = useState<Partial<Record<string, any>>>({});
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
+    // Value States (from Config)
+    const [threshold, setThreshold] = useState(configManager.get('threshold'));
+    const [downsample, setDownsample] = useState(configManager.get('downsample'));
+    const [matchingMethod, setMatchingMethod] = useState(configManager.get('matchingMethod'));
+    const [adaptiveScaling, setAdaptiveScaling] = useState(configManager.get('adaptiveScaling'));
+    const [earlyTermination, setEarlyTermination] = useState(configManager.get('earlyTermination'));
+    const [loopInterval, setLoopInterval] = useState(configManager.get('loopInterval'));
+    const [roiEnabled, setRoiEnabled] = useState(configManager.get('roiEnabled'));
+    const [roiRegions, setRoiRegions] = useState<ROIRegion[]>(configManager.get('roiRegions'));
+
+    // Modal State for ROI Creation
+    const [isRoiModalOpen, setIsRoiModalOpen] = useState(false);
+    const [newRoiData, setNewRoiData] = useState<{ name: string, scope: string, rect: any } | null>(null);
+
+    // Performance Panel
+    const [showPerformancePanel, setShowPerformancePanel] = useState(false);
+    const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
+
+    // Log Level
+    const [logLevel, setLogLevel] = useState(logger.getConfig().level);
+
+    // Task List
+    const [registeredTasks, setRegisteredTasks] = useState<string[]>([]);
+
+    // --- Effects ---
     useEffect(() => {
         const updateStatus = (msg: string) => setStatus(msg);
-        bus.on(EVENTS.STATUS_UPDATE, updateStatus);
-
-        // [新增] 监听引擎状态变更
-        const updateEngineState = (state: { running: boolean }) => {
-            setRunning(state.running);
+        const updateEngineState = (state: { running: boolean }) => setRunning(state.running);
+        const handleRoiDrawn = (rect: any) => {
+            setNewRoiData({ name: 'New Region', scope: 'global', rect });
+            setIsRoiModalOpen(true);
         };
+
+        bus.on(EVENTS.STATUS_UPDATE, updateStatus);
         bus.on(EVENTS.ENGINE_STATE_CHANGE, updateEngineState);
+        bus.on('roi:drawn', handleRoiDrawn);
+        bus.on(EVENTS.TASK_LIST_UPDATE, (tasks: string[]) => setRegisteredTasks(tasks));
 
-        // 性能统计事件监听
-        const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
-        bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
-
-        // 注意：不再初始化时发送配置
-        // 引擎在构造函数中已经从configManager读取了配置
-        // UI只应该在用户手动更改配置时才发送更新
+        // Query initial state
+        bus.emit(EVENTS.ENGINE_QUERY_STATE);
 
         return () => {
             bus.off(EVENTS.STATUS_UPDATE, updateStatus);
             bus.off(EVENTS.ENGINE_STATE_CHANGE, updateEngineState);
-            bus.off(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
+            bus.off('roi:drawn', handleRoiDrawn);
         };
     }, []);
 
-    // [新增] 组件挂载时，主动查询引擎状态
-    useEffect(() => {
-        bus.emit(EVENTS.ENGINE_QUERY_STATE);
-    }, []);
-
-    const toggle = () => {
-        if (running) {
-            bus.emit(EVENTS.TASK_STOP);
-        } else {
-            bus.emit(EVENTS.TASK_START, '自动跳过剧情');
-        }
-        // [修改] 不再手动设置 running，等待引擎事件通知
-        // setRunning(!running);
+    // --- Handlers ---
+    const toggleTask = () => {
+        if (running) bus.emit(EVENTS.TASK_STOP);
+        else bus.emit(EVENTS.TASK_START, '自动跳过剧情');
     };
 
-    // 统一发送配置
-    const sendConfig = (cfg: any) => {
-        bus.emit(EVENTS.CONFIG_UPDATE, cfg);
-    };
-
-    const handleThresholdChange = (e: any) => {
-        const val = parseFloat(e.target.value);
-        setThreshold(val);
-        setPendingConfig(prev => ({ ...prev, threshold: val }));
+    const handleConfigChange = (key: string, value: any) => {
+        setPendingConfig(prev => ({ ...prev, [key]: value }));
         setHasUnsavedChanges(true);
+
+        // Update local state immediately for UI responsiveness
+        if (key === 'threshold') setThreshold(value);
+        if (key === 'downsample') setDownsample(value);
+        if (key === 'matchingMethod') setMatchingMethod(value);
+        if (key === 'adaptiveScaling') setAdaptiveScaling(value);
+        if (key === 'earlyTermination') setEarlyTermination(value);
+        if (key === 'loopInterval') setLoopInterval(value);
+        if (key === 'roiEnabled') setRoiEnabled(value);
+        if (key === 'roiRegions') setRoiRegions(value);
     };
 
-    const handleQualityChange = (e: any) => {
-        const val = parseFloat(e.target.value);
-        setDownsample(val);
-        setPendingConfig(prev => ({ ...prev, downsample: val }));
-        setHasUnsavedChanges(true);
-    };
-
-    const handleScaleChange = (e: any) => {
-        const mode = e.target.value;
-        setScaleMode(mode);
-
-        // 将模式转换为具体的比例数组
-        let scales = [1.0];
-        if (mode === 'NORMAL') scales = [0.9, 1.0, 1.1];
-        if (mode === 'WIDE') scales = [0.8, 0.9, 1.0, 1.1, 1.2]; // 范围更广但更慢
-
-        setPendingConfig(prev => ({ ...prev, scales }));
-        setHasUnsavedChanges(true);
-    };
-
-
-
-    const handleAdaptiveScalingChange = (e: any) => {
-        const val = e.target.checked;
-        setAdaptiveScaling(val);
-        setPendingConfig(prev => ({ ...prev, adaptiveScaling: val }));
-        setHasUnsavedChanges(true);
-    };
-
-    const handleRoiEnabledChange = (e: any) => {
-        const val = e.target.checked;
-        setRoiEnabled(val);
-        setPendingConfig(prev => ({ ...prev, roiEnabled: val }));
-        setHasUnsavedChanges(true);
-    };
-
-    const handleMatchingMethodChange = (e: any) => {
-        const val = e.target.value;
-        setMatchingMethod(val);
-        setPendingConfig(prev => ({ ...prev, matchingMethod: val }));
-        setHasUnsavedChanges(true);
-    };
-
-    const handleEarlyTerminationChange = (e: any) => {
-        const val = e.target.checked;
-        setEarlyTermination(val);
-        setPendingConfig(prev => ({ ...prev, earlyTermination: val }));
-        setHasUnsavedChanges(true);
-    };
-
-    // 保存配置的函数
-    const handleSaveConfig = () => {
+    const saveConfig = () => {
         if (Object.keys(pendingConfig).length > 0) {
-            // 发送所有待保存的配置
-            sendConfig(pendingConfig);
+            bus.emit(EVENTS.CONFIG_UPDATE, pendingConfig);
             setPendingConfig({});
             setHasUnsavedChanges(false);
         }
     };
 
+    const confirmAddRoi = () => {
+        if (newRoiData) {
+            // 获取坐标转换信息: 将屏幕坐标转换为游戏坐标
+            const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+
+            if (displayInfo) {
+                // 屏幕坐标 → 游戏坐标
+                const gameX = (newRoiData.rect.x - displayInfo.offsetX) / displayInfo.scaleX;
+                const gameY = (newRoiData.rect.y - displayInfo.offsetY) / displayInfo.scaleY;
+                const gameW = newRoiData.rect.w / displayInfo.scaleX;
+                const gameH = newRoiData.rect.h / displayInfo.scaleY;
+
+                configManager.addROI({
+                    name: newRoiData.name,
+                    x: Math.floor(gameX),
+                    y: Math.floor(gameY),
+                    w: Math.floor(gameW),
+                    h: Math.floor(gameH),
+                    scope: newRoiData.scope
+                });
+            } else {
+                // 如果无法获取转换信息，仍然保存（兜底）
+                console.warn('Unable to get display info for coordinate conversion');
+                configManager.addROI({
+                    name: newRoiData.name,
+                    x: newRoiData.rect.x,
+                    y: newRoiData.rect.y,
+                    w: newRoiData.rect.w,
+                    h: newRoiData.rect.h,
+                    scope: newRoiData.scope
+                });
+            }
+
+            // Refresh local list
+            setRoiRegions(configManager.get('roiRegions'));
+            setNewRoiData(null);
+            setIsRoiModalOpen(false);
+        }
+    };
+
     return (
         <>
-            <div
-                class="bgi-panel"
-                style={{
-                    top: pos.y, left: pos.x, position: 'fixed', pointerEvents: 'auto',
-                    width: '240px', fontSize: '12px'
-                }}
-            >
-                <div
-                    class="row header"
-                    onMouseDown={startDrag}
-                >
-                    <strong>BetterGi v2.0</strong>
-                    <span
-                        class="close-btn"
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={onClose}
-                    >
-                        ×
-                    </span>
+            <div class="bgi-panel" style={{ top: pos.y, left: pos.x, position: 'fixed', pointerEvents: 'auto' }}>
+                {/* Header */}
+                <div class="header" onMouseDown={startDrag}>
+                    <strong>BetterGi Next</strong>
+                    <div class="close-btn" onClick={onClose} onMouseDown={e => e.stopPropagation()}>×</div>
                 </div>
 
-                <div class="row">
-                    <label>
-                        状态:
-                        <span class={`status-indicator ${running ? 'running' : status.includes('等待') ? 'waiting' : 'stopped'}`}></span>
-                        {status}
-                    </label>
+                {/* Status Bar */}
+                <div class="row glass-surface" style={{ padding: '8px', display: 'flex', alignItems: 'center' }}>
+                    <span class={`status-indicator ${running ? 'running' : status.includes('等待') ? 'waiting' : 'stopped'}`}></span>
+                    <span style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>{status}</span>
                 </div>
 
-                {/* 1. 匹配阈值 */}
-                <div class={`row ${pendingConfig.threshold !== undefined ? 'config-changed' : ''}`}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <label>匹配阈值</label>
-                        <span style={{ color: 'var(--color-text-tertiary)' }}>{threshold.toFixed(2)}</span>
-                    </div>
-                    <input type="range" min="0.5" max="1.0" step="0.01" value={threshold} onInput={handleThresholdChange} />
+                {/* Tabs */}
+                <div class="segmented-control">
+                    <button class={activeTab === 'general' ? 'active' : ''} onClick={() => setActiveTab('general')}>通用</button>
+                    <button class={activeTab === 'roi' ? 'active' : ''} onClick={() => setActiveTab('roi')}>ROI 区域</button>
+                    <button class={activeTab === 'system' ? 'active' : ''} onClick={() => setActiveTab('system')}>系统</button>
                 </div>
 
-                {/* 2. 预览精度 (降采样) */}
-                <div class={`row ${pendingConfig.downsample !== undefined ? 'config-changed' : ''}`}>
-                    <label>预览精度 (速度 vs 画质)</label>
-                    <select value={downsample} onChange={handleQualityChange}>
-                        <option value="0.33">极速 (0.33x)</option>
-                        <option value="0.5">标准 (0.5x)</option>
-                        <option value="0.66">均衡 (0.66x)</option>
-                        <option value="1.0">原画 (1.0x - 慢)</option>
-                    </select>
-                </div>
+                {/* Content Area */}
+                <div style={{ minHeight: '150px' }}>
 
-                {/* 3. 多尺度搜索 */}
-                <div class={`row ${pendingConfig.scales !== undefined ? 'config-changed' : ''}`}>
-                    <label>多尺度搜索 (大小变化)</label>
-                    <select value={scaleMode} onChange={handleScaleChange}>
-                        <option value="OFF">关闭 (仅 1.0x)</option>
-                        <option value="NORMAL">标准 (0.9 ~ 1.1)</option>
-                        <option value="WIDE">宽范围 (0.8 ~ 1.2)</option>
-                    </select>
-                </div>
+                    {/* --- GENERAL TAB --- */}
+                    {activeTab === 'general' && (
+                        <div class="fade-in">
+                            <div class={`row ${pendingConfig.threshold !== undefined ? 'config-changed' : ''}`}>
+                                <div class="flex-between">
+                                    <label>匹配阈值</label>
+                                    <span style={{ fontSize: '11px', color: 'var(--color-primary-light)' }}>{Number(threshold).toFixed(2)}</span>
+                                </div>
+                                <input type="range" min="0.5" max="1.0" step="0.01" value={threshold} onInput={(e: any) => handleConfigChange('threshold', parseFloat(e.target.value))} />
+                            </div>
 
-                {/* 性能统计显示 */}
-                {performanceStats && (
-                    <div class="performance-stats">
-                        <div class="stat-row">
-                            <span>⚡ 平均耗时:</span>
-                            <span style={{
-                                color: performanceStats.averageTime > 300 ? 'var(--color-danger)' :
-                                    performanceStats.averageTime > 100 ? 'var(--color-warning)' : 'var(--color-success)'
-                            }}>
-                                {performanceStats.averageTime || 0}ms
-                            </span>
+                            <div class={`row ${pendingConfig.downsample !== undefined ? 'config-changed' : ''}`}>
+                                <label>预览精度</label>
+                                <select value={downsample} onChange={(e: any) => handleConfigChange('downsample', parseFloat(e.target.value))}>
+                                    <option value="0.33">极速 (0.33x)</option>
+                                    <option value="0.5">标准 (0.5x)</option>
+                                    <option value="0.66">均衡 (0.66x)</option>
+                                    <option value="1.0">原画 (1.0x)</option>
+                                </select>
+                            </div>
+
+                            <div class={`row ${pendingConfig.matchingMethod !== undefined ? 'config-changed' : ''}`}>
+                                <label>匹配算法</label>
+                                <select value={matchingMethod} onChange={(e: any) => handleConfigChange('matchingMethod', e.target.value)}>
+                                    <option value="TM_CCOEFF_NORMED">相关系数 (推荐)</option>
+                                    <option value="TM_SQDIFF_NORMED">平方差</option>
+                                    <option value="TM_CCORR_NORMED">相关性</option>
+                                </select>
+                            </div>
+
+                            <div class="row" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <input
+                                        type="checkbox"
+                                        id="adaptive-scaling"
+                                        checked={adaptiveScaling}
+                                        onChange={(e: any) => handleConfigChange('adaptiveScaling', e.target.checked)}
+                                    />
+                                    <label for="adaptive-scaling" style={{ margin: 0, cursor: 'pointer' }}>自适应缩放 (Multiscale)</label>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <input
+                                        type="checkbox"
+                                        id="early-termination"
+                                        checked={earlyTermination}
+                                        onChange={(e: any) => handleConfigChange('earlyTermination', e.target.checked)}
+                                    />
+                                    <label for="early-termination" style={{ margin: 0, cursor: 'pointer' }}>提前终止 (性能优化)</label>
+                                </div>
+                            </div>
+
+                            <div class="row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <button class="bgi-btn secondary" onClick={onCrop}>📷 截图</button>
+                                <button class={`bgi-btn ${showPreview ? 'secondary' : 'warning'}`} onClick={onTogglePreview}>
+                                    {showPreview ? '👁 隐藏预览' : '🕶 显示预览'}
+                                </button>
+                            </div>
                         </div>
-                        <div class="stat-row">
-                            <span>📊 匹配次数:</span>
-                            <span>{performanceStats.matchCount || 0}</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>💾 缓存大小:</span>
-                            <span>{performanceStats.cacheSize || 0}</span>
-                        </div>
-                    </div>
-                )}
+                    )}
 
-                {/* 高级设置切换 */}
-                <div class="row" style={{ marginTop: '10px' }}>
-                    <button
-                        class={`bgi-btn ${showAdvanced ? 'primary' : 'secondary'}`}
-                        onClick={() => setShowAdvanced(!showAdvanced)}
-                    >
-                        {showAdvanced ? '▼ 隐藏高级设置' : '▶ 显示高级设置'}
-                    </button>
-                </div>
+                    {/* --- ROI TAB --- */}
+                    {activeTab === 'roi' && (
+                        <div class="fade-in">
+                            <div class={`row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <input
+                                    type="checkbox"
+                                    id="roi-toggle"
+                                    checked={roiEnabled}
+                                    onChange={(e: any) => handleConfigChange('roiEnabled', e.target.checked)}
+                                />
+                                <label for="roi-toggle" style={{ marginBottom: 0, cursor: 'pointer' }}>启用区域匹配 (性能↑)</label>
+                            </div>
 
-                {/* 高级性能设置 */}
-                {showAdvanced && (
-                    <div class="advanced-settings">
-                        <div class={`checkbox-row ${pendingConfig.adaptiveScaling !== undefined ? 'config-changed' : ''}`}>
-                            <input
-                                type="checkbox"
-                                id="chk-adaptive"
-                                checked={adaptiveScaling}
-                                onChange={handleAdaptiveScalingChange}
-                            />
-                            <label for="chk-adaptive">自适应缩放</label>
+                            {roiEnabled && (
+                                <ROIEditor
+                                    regions={roiRegions}
+                                    onChange={(list: ROIRegion[]) => handleConfigChange('roiRegions', list)}
+                                    onAdd={onAddRoi}
+                                />
+                            )}
                         </div>
+                    )}
 
-                        <div class={`checkbox-row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`}>
-                            <input
-                                type="checkbox"
-                                id="chk-roi"
-                                checked={roiEnabled}
-                                onChange={handleRoiEnabledChange}
-                            />
-                            <label for="chk-roi">ROI区域匹配</label>
-                        </div>
+                    {/* --- SYSTEM TAB --- */}
+                    {activeTab === 'system' && (
+                        <div class="fade-in">
+                            <button class="bgi-btn secondary" onClick={() => setShowPerformancePanel(!showPerformancePanel)}>
+                                📊 {showPerformancePanel ? '关闭' : '打开'} 性能监控
+                            </button>
 
-                        {/* ROI 区域管理 - 仅在启用时显示 */}
-                        {roiEnabled && (
-                            <div class="roi-manager" style={{ marginTop: '8px', padding: '8px', background: 'var(--color-bg-tertiary)', borderRadius: '6px' }}>
-                                <div style={{ display: 'flex', gap: '5px', marginBottom: '8px' }}>
-                                    <button
-                                        class="bgi-btn action"
-                                        style={{ flex: 1, fontSize: '11px', padding: '4px 8px' }}
-                                        onClick={onAddRoi}
-                                    >
-                                        📐 添加ROI
+                            <div style={{ marginTop: '12px' }}>
+                                <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>配置管理</label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                    <button class="bgi-btn secondary" style={{ fontSize: '11px', padding: '6px' }} onClick={() => {
+                                        const configStr = configManager.export();
+                                        const blob = new Blob([configStr], { type: 'application/json' });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = `bettergi-config-${new Date().toISOString().slice(0, 10)}.json`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                    }}>
+                                        📥 导出配置
                                     </button>
-                                    <button
-                                        class="bgi-btn danger"
-                                        style={{ fontSize: '11px', padding: '4px 8px' }}
-                                        onClick={() => {
-                                            configManager.clearAllROI();
-                                            setRoiRegions([]);
-                                        }}
-                                    >
-                                        🗑️
+                                    <button class="bgi-btn secondary" style={{ fontSize: '11px', padding: '6px' }} onClick={() => {
+                                        const input = document.createElement('input');
+                                        input.type = 'file';
+                                        input.accept = '.json';
+                                        input.onchange = (e: any) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) {
+                                                const reader = new FileReader();
+                                                reader.onload = (re: any) => {
+                                                    const success = configManager.import(re.target.result);
+                                                    if (success) {
+                                                        // Refresh all states from config
+                                                        setThreshold(configManager.get('threshold'));
+                                                        setDownsample(configManager.get('downsample'));
+                                                        setMatchingMethod(configManager.get('matchingMethod'));
+                                                        setAdaptiveScaling(configManager.get('adaptiveScaling'));
+                                                        setEarlyTermination(configManager.get('earlyTermination'));
+                                                        setRoiEnabled(configManager.get('roiEnabled'));
+                                                        setRoiRegions(configManager.get('roiRegions'));
+                                                        alert('✅ 配置导入成功！');
+                                                    } else {
+                                                        alert('❌ 配置导入失败，请检查文件格式');
+                                                    }
+                                                };
+                                                reader.readAsText(file);
+                                            }
+                                        };
+                                        input.click();
+                                    }}>
+                                        📤 导入配置
                                     </button>
                                 </div>
+                                <button class="bgi-btn danger" style={{ marginTop: '8px', fontSize: '11px', padding: '6px' }} onClick={() => {
+                                    if (confirm('确定要重置所有配置为默认值吗？此操作不可撤销。')) {
+                                        configManager.reset();
+                                        // Refresh all states
+                                        setThreshold(configManager.get('threshold'));
+                                        setDownsample(configManager.get('downsample'));
+                                        setMatchingMethod(configManager.get('matchingMethod'));
+                                        setAdaptiveScaling(configManager.get('adaptiveScaling'));
+                                        setEarlyTermination(configManager.get('earlyTermination'));
+                                        setRoiEnabled(configManager.get('roiEnabled'));
+                                        setRoiRegions(configManager.get('roiRegions'));
+                                        setPendingConfig({});
+                                        setHasUnsavedChanges(false);
+                                        alert('✅ 配置已重置为默认值');
+                                    }
+                                }}>
+                                    🔄 重置配置
+                                </button>
+                            </div>
 
-                                {/* ROI 区域列表 */}
-                                {roiRegions.length === 0 ? (
-                                    <div style={{ color: 'var(--color-text-tertiary)', fontSize: '11px', textAlign: 'center' }}>
-                                        暂无 ROI 区域，点击添加
+                            <div style={{ marginTop: '12px' }}>
+                                <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>高级设置</label>
+                                <div class={`row ${pendingConfig.loopInterval !== undefined ? 'config-changed' : ''}`}>
+                                    <div class="flex-between">
+                                        <label>任务循环间隔</label>
+                                        <span style={{ fontSize: '11px', color: 'var(--color-primary-light)' }}>{loopInterval}ms</span>
                                     </div>
-                                ) : (
-                                    <div style={{ maxHeight: '120px', overflowY: 'auto' }}>
-                                        {roiRegions.map(region => (
-                                            <div
-                                                key={region.id}
-                                                style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'space-between',
-                                                    padding: '4px 6px',
-                                                    background: 'var(--color-bg-secondary)',
-                                                    borderRadius: '4px',
-                                                    marginBottom: '4px',
-                                                    fontSize: '10px'
-                                                }}
-                                            >
-                                                <div>
-                                                    <span style={{ color: region.scope === 'global' ? '#4ade80' : '#60a5fa' }}>
-                                                        {region.scope === 'global' ? '🌐' : '📋'}
-                                                    </span>
-                                                    <span style={{ marginLeft: '4px' }}>{region.name}</span>
-                                                    <span style={{ color: 'var(--color-text-tertiary)', marginLeft: '4px' }}>
-                                                        ({region.x},{region.y}) {region.w}x{region.h}
-                                                    </span>
-                                                </div>
+                                    <input type="range" min="50" max="2000" step="50" value={loopInterval} onInput={(e: any) => handleConfigChange('loopInterval', parseInt(e.target.value))} />
+                                </div>
+                                <button class="bgi-btn secondary" style={{ marginTop: '8px', fontSize: '11px', padding: '6px' }} onClick={() => {
+                                    const diagInfo = {
+                                        version: '2.1.0',
+                                        buildDate: new Date().toISOString().slice(0, 10),
+                                        userAgent: navigator.userAgent,
+                                        screenSize: `${window.innerWidth}x${window.innerHeight}`,
+                                        videoInfo: window.BetterGi?.vision.getDisplayInfo(),
+                                        config: configManager.getAll(),
+                                        performance: window.BetterGi?.engine?.vision?.getPerformanceMetrics?.() || 'N/A'
+                                    };
+                                    const diagStr = JSON.stringify(diagInfo, null, 2);
+                                    navigator.clipboard?.writeText(diagStr).then(() => {
+                                        alert('📋 诊断信息已复制到剪贴板');
+                                    }).catch(() => {
+                                        console.log('Diagnostic Info:', diagStr);
+                                        alert('诊断信息已输出到控制台 (F12)');
+                                    });
+                                }}>
+                                    🔍 复制诊断信息
+                                </button>
+                            </div>
+
+                            <div style={{ marginTop: '12px' }}>
+                                <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>日志级别</label>
+                                <select
+                                    value={logLevel}
+                                    onChange={(e: any) => {
+                                        const level = parseInt(e.target.value);
+                                        setLogLevel(level);
+                                        logger.updateConfig({ level });
+                                    }}
+                                    style={{ fontSize: '11px', padding: '4px 8px' }}
+                                >
+                                    <option value={0}>Debug (全部)</option>
+                                    <option value={1}>Info (信息+)</option>
+                                    <option value={2}>Warn (警告+)</option>
+                                    <option value={3}>Error (仅错误)</option>
+                                </select>
+                            </div>
+
+                            {registeredTasks.length > 0 && (
+                                <div style={{ marginTop: '12px' }}>
+                                    <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>已注册任务 ({registeredTasks.length})</label>
+                                    <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px', maxHeight: '80px', overflowY: 'auto' }}>
+                                        {registeredTasks.map((taskName, i) => (
+                                            <div key={i} style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center',
+                                                padding: '4px 0',
+                                                borderBottom: i < registeredTasks.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none'
+                                            }}>
+                                                <span style={{ fontSize: '11px', color: 'var(--color-text-primary)' }}>{taskName}</span>
                                                 <button
-                                                    style={{
-                                                        background: 'none',
-                                                        border: 'none',
-                                                        color: 'var(--color-danger)',
-                                                        cursor: 'pointer',
-                                                        fontSize: '12px'
-                                                    }}
-                                                    onClick={() => {
-                                                        configManager.removeROI(region.id);
-                                                        setRoiRegions(configManager.get('roiRegions'));
-                                                    }}
+                                                    class="bgi-btn primary"
+                                                    style={{ fontSize: '9px', padding: '2px 8px', marginTop: 0 }}
+                                                    onClick={() => bus.emit(EVENTS.TASK_START, taskName)}
                                                 >
-                                                    ✕
+                                                    启动
                                                 </button>
                                             </div>
                                         ))}
                                     </div>
-                                )}
+                                </div>
+                            )}
+
+                            <div style={{ marginTop: '16px', fontSize: '11px', color: 'var(--color-text-tertiary)', borderTop: '1px solid var(--color-border-glass)', paddingTop: '12px' }}>
+                                <div>Version: 2.1.0 (Premium)</div>
+                                <div style={{ marginTop: '4px', opacity: 0.7 }}>Build: {new Date().toISOString().slice(0, 10)}</div>
                             </div>
-                        )}
-
-                        <div class={`checkbox-row ${pendingConfig.earlyTermination !== undefined ? 'config-changed' : ''}`}>
-                            <input
-                                type="checkbox"
-                                id="chk-early"
-                                checked={earlyTermination}
-                                onChange={handleEarlyTerminationChange}
-                            />
-                            <label for="chk-early">早期终止优化</label>
                         </div>
-
-                        <div class={`row ${pendingConfig.matchingMethod !== undefined ? 'config-changed' : ''}`} style={{ marginBottom: '5px' }}>
-                            <label style={{ fontSize: 'var(--font-size-sm)' }}>匹配算法</label>
-                            <select value={matchingMethod} onChange={handleMatchingMethodChange}>
-                                <option value="TM_CCOEFF_NORMED">标准相关系数</option>
-                                <option value="TM_SQDIFF_NORMED">平方差匹配</option>
-                                <option value="TM_CCORR_NORMED">相关性匹配</option>
-                            </select>
-                        </div>
-                    </div>
-                )}
-
-                <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
-                    <button class="bgi-btn action" onClick={onCrop}>📷 截图</button>
-                    <button
-                        class={`bgi-btn ${showPreview ? 'secondary' : 'info'}`}
-                        onClick={onTogglePreview}
-                    >
-                        {showPreview ? '🔴 隐藏预览' : '🟢 显示预览'}
-                    </button>
+                    )}
                 </div>
 
-                <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
-                    <button
-                        class="bgi-btn info"
-                        onClick={() => setShowPerformancePanel(!showPerformancePanel)}
-                    >
-                        📊 {showPerformancePanel ? '隐藏性能监控' : '显示性能监控'}
-                    </button>
-                </div>
-
-                {/* 配置保存按钮 */}
-                {hasUnsavedChanges && (
-                    <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
-                        <button
-                            class="bgi-btn warning config-save-btn"
-                            onClick={handleSaveConfig}
-                        >
-                            💾 保存配置更改 ({Object.keys(pendingConfig).length} 项)
+                {/* Footer Actions */}
+                <div style={{ marginTop: '16px', borderTop: '1px solid var(--color-border-glass)', paddingTop: '12px' }}>
+                    {hasUnsavedChanges && (
+                        <button class="bgi-btn warning" onClick={saveConfig} style={{ marginBottom: '8px' }}>
+                            💾 保存配置 ({Object.keys(pendingConfig).length})
                         </button>
-                    </div>
-                )}
+                    )}
 
-                <button
-                    class={`bgi-btn ${running ? 'danger' : 'primary'}`}
-                    onClick={toggle}
-                >
-                    {running ? '⏹ 停止任务' : '▶ 启动任务'}
-                </button>
+                    <button class={`bgi-btn ${running ? 'danger' : 'primary'}`} onClick={toggleTask}>
+                        {running ? '⏹ 停止任务' : '▶ 启动任务'}
+                    </button>
+                </div>
             </div>
 
-            {/* 性能监控面板 */}
+            {/* ROI Name Modal */}
+            <Modal
+                title="创建新 ROI 区域"
+                isOpen={isRoiModalOpen}
+                onClose={() => setIsRoiModalOpen(false)}
+                footer={
+                    <>
+                        <button class="bgi-btn secondary" onClick={() => setIsRoiModalOpen(false)}>取消</button>
+                        <button class="bgi-btn primary" onClick={confirmAddRoi}>确认创建</button>
+                    </>
+                }
+            >
+                <div>
+                    <div class="row">
+                        <label>区域名称</label>
+                        <input
+                            type="text"
+                            placeholder="例如: 小地图, HP条"
+                            value={newRoiData?.name || ''}
+                            onInput={(e: any) => setNewRoiData(prev => prev ? { ...prev, name: e.target.value } : null)}
+                            autoFocus
+                        />
+                    </div>
+                    <div class="row">
+                        <label>作用域</label>
+                        <select
+                            value={newRoiData?.scope || 'global'}
+                            onChange={(e: any) => setNewRoiData(prev => prev ? { ...prev, scope: e.target.value } : null)}
+                        >
+                            <option value="global">全局 (Global)</option>
+                            <option value="Preview">仅预览 (Preview)</option>
+                        </select>
+                    </div>
+                    {newRoiData?.rect && (
+                        <div style={{ padding: '8px', background: 'var(--color-bg-surface)', borderRadius: '4px', fontSize: '11px' }}>
+                            Detected: {Math.round(newRoiData.rect.w)} x {Math.round(newRoiData.rect.h)} at ({Math.round(newRoiData.rect.x)}, {Math.round(newRoiData.rect.y)})
+                        </div>
+                    )}
+                </div>
+            </Modal>
+
+            {/* Performance Panel */}
             {showPerformancePanel && (
                 <PerformancePanel
                     initialPos={performancePanelPos}

@@ -18,11 +18,10 @@ function Root() {
     // 截图状态
     const [isCropping, setIsCropping] = useState(false);
 
-    // 新增: ROI 添加状态
+    // ROI 添加状态
     const [isAddingRoi, setIsAddingRoi] = useState(false);
-    const [pendingRoiRect, setPendingRoiRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
 
-    // 新增: 预览可见性状态
+    // 预览可见性状态
     const [showDebugLayer, setShowDebugLayer] = useState(true);
 
     const handleCropStart = () => {
@@ -37,35 +36,24 @@ function Root() {
         bus.emit(EVENTS.CROP_REQUEST, rect);
     };
 
-    // 新增: 预览切换
     const handleTogglePreview = () => {
         setShowDebugLayer(prev => !prev);
     };
 
-    // 新增: ROI 添加流程
     const handleAddRoiStart = () => {
         setShowPanel(false);
         setIsAddingRoi(true);
     };
 
     const handleRoiDrawConfirm = (rect: { x: number, y: number, w: number, h: number }) => {
-        setPendingRoiRect(rect);
         setIsAddingRoi(false);
-        // 弹出命名对话框
-        const name = prompt('请输入 ROI 区域名称:', '新区域');
-        if (name) {
-            const scope = prompt('请输入作用域 (global=全局, Preview=预览, 或任务名):', 'global') || 'global';
-            configManager.addROI({
-                name,
-                x: rect.x,
-                y: rect.y,
-                w: rect.w,
-                h: rect.h,
-                scope
-            });
-        }
         setShowPanel(true);
-        setPendingRoiRect(null);
+
+        // [修改] 不再弹出 prompt，而是发送事件给 App 组件处理 Modal
+        // 使用 setTimeout 确保 App 组件已经重新渲染并可见
+        setTimeout(() => {
+            bus.emit('roi:drawn', rect);
+        }, 100);
     };
 
     return (
