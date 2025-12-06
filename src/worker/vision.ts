@@ -226,7 +226,26 @@ self.onmessage = (e: MessageEvent) => {
                 bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
 
                 for (const roi of config.roi.regions) {
-                    const roiResult = matchWithROI(matchSrc, matchTempl, roi, config);
+                    // 关键修复: ROI坐标需要根据降采样因子缩放
+                    const scaledRoi = {
+                        x: Math.floor(roi.x * downsampleFactor),
+                        y: Math.floor(roi.y * downsampleFactor),
+                        w: Math.floor(roi.w * downsampleFactor),
+                        h: Math.floor(roi.h * downsampleFactor)
+                    };
+
+                    // 验证ROI边界
+                    const srcWidth = matchSrc.cols;
+                    const srcHeight = matchSrc.rows;
+                    if (scaledRoi.x < 0 || scaledRoi.y < 0 ||
+                        scaledRoi.x + scaledRoi.w > srcWidth ||
+                        scaledRoi.y + scaledRoi.h > srcHeight ||
+                        scaledRoi.w <= 0 || scaledRoi.h <= 0) {
+                        console.warn('ROI out of bounds after scaling, skipping:', scaledRoi);
+                        continue;
+                    }
+
+                    const roiResult = matchWithROI(matchSrc, matchTempl, scaledRoi, config);
                     if (roiResult.score > bestRes.score) {
                         bestRes = roiResult;
                     }
