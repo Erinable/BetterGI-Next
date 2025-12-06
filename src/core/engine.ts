@@ -234,6 +234,7 @@ export class Engine {
 
             task.start();
             bus.emit(EVENTS.STATUS_UPDATE, `运行中: ${task.name}`);
+            bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: true, taskName: task.name });
 
             logger.info('engine', `Task ${name} started successfully`);
 
@@ -261,6 +262,7 @@ export class Engine {
         // [新增] 停止任务时，立即清理屏幕上的绿框
         bus.emit(EVENTS.DEBUG_CLEAR);
         bus.emit(EVENTS.STATUS_UPDATE, '已停止');
+        bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: false });
     }
 
     updateConfig(cfg: any) {
@@ -357,6 +359,7 @@ export class Engine {
 
                 // 通知 UI 任务已启动
                 bus.emit(EVENTS.STATUS_UPDATE, '截图匹配任务运行中...');
+                bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: true, taskName: '截图匹配' });
                 return;
             }
         }

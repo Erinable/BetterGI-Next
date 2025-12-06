@@ -59,6 +59,12 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
         const updateStatus = (msg: string) => setStatus(msg);
         bus.on(EVENTS.STATUS_UPDATE, updateStatus);
 
+        // [新增] 监听引擎状态变更
+        const updateEngineState = (state: { running: boolean }) => {
+            setRunning(state.running);
+        };
+        bus.on(EVENTS.ENGINE_STATE_CHANGE, updateEngineState);
+
         // 性能统计事件监听
         const updatePerformanceStats = (stats: any) => setPerformanceStats(stats);
         bus.on(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
@@ -69,6 +75,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
 
         return () => {
             bus.off(EVENTS.STATUS_UPDATE, updateStatus);
+            bus.off(EVENTS.ENGINE_STATE_CHANGE, updateEngineState);
             bus.off(EVENTS.PERFORMANCE_WORKER_STATS, updatePerformanceStats);
         };
     }, []);
@@ -79,7 +86,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
         } else {
             bus.emit(EVENTS.TASK_START, '自动跳过剧情');
         }
-        setRunning(!running);
+        // [修改] 不再手动设置 running，等待引擎事件通知
+        // setRunning(!running);
     };
 
     // 统一发送配置

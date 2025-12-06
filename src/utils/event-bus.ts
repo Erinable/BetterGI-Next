@@ -57,6 +57,7 @@ export const EVENTS = {
     CONFIG_UPDATE: 'config:update',
     CROP_REQUEST: 'crop:request',
     TASK_LIST_UPDATE: 'TASK_LIST_UPDATE',
+    ENGINE_STATE_CHANGE: 'engine:state_change', // [新增] 引擎运行状态变更
     // 性能相关事件
     PERFORMANCE_WORKER_STATS: 'performance:worker_stats',
     PERFORMANCE_METRICS_UPDATE: 'performance:metrics_update',
