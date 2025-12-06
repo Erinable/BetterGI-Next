@@ -372,11 +372,21 @@ export class Engine {
                     if (screen) {
                         const t0 = performance.now();
 
-						// [关键修改] 使用 this.config 中的动态参数
+                        // 获取 Preview 任务的 ROI 配置 (如果有)
+                        const previewRoi = configManager.getROIForTemplate('Preview');
+
                         const rawRes = await this.vision.match(screen, template, {
-                            threshold: this.config.threshold,   // 动态阈值
-                            downsample: this.config.downsample, // 动态降采样
-                            scales: this.config.scales          // 动态多尺度
+                            threshold: this.config.threshold,
+                            downsample: this.config.downsample,
+                            scales: this.config.scales,
+                            // 如果有配置 ROI，则启用并传递
+                            roiEnabled: !!previewRoi,
+                            roiRegions: previewRoi ? [{
+                                x: previewRoi.x,
+                                y: previewRoi.y,
+                                w: previewRoi.w,
+                                h: previewRoi.h
+                            }] : []
                         });
 
                         // [关键修复] Worker 不返回宽高，我们需要手动补全
