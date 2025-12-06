@@ -18,29 +18,55 @@ export abstract class BaseTask {
     interval: number = 1000; // 默认循环间隔 (ms)
     ctx!: TaskContext;       // 由 Engine 注入
 
+    // 新增: 生命周期管理
+    private loopTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    private loopInstanceId: number = 0; // 防止多个 loop 并行运行
+    private isRegistered: boolean = false; // 防止重复注册资源
+
     constructor(name: string) {
         this.name = name;
     }
 
     /**
-     * 任务启动逻辑（通常不需要重写，除非你有特殊需求）
+     * 安全注册 - 只会执行一次
+     */
+    async safeRegister(): Promise<void> {
+        if (this.isRegistered) {
+            logger.debug('task', `${this.name} already registered, skipping`);
+            return;
+        }
+        await this.onRegister();
+        this.isRegistered = true;
+    }
+
+    /**
+     * 任务启动逻辑
      */
     start() {
-        if (this.running) return;
+        if (this.running) {
+            logger.warn('task', `${this.name} is already running, ignoring start`);
+            return;
+        }
+
         this.running = true;
-        logger.info('task', `${this.name} started`);
+        this.loopInstanceId++; // 递增实例 ID，使旧的 loop 失效
+        const currentInstanceId = this.loopInstanceId;
+
+        logger.info('task', `${this.name} started (instance: ${currentInstanceId})`);
 
         const loop = async () => {
-            if (!this.running) return;
+            // 检查是否仍然是当前实例 (防止多个 loop 并行)
+            if (!this.running || this.loopInstanceId !== currentInstanceId) {
+                logger.debug('task', `${this.name} loop terminated (instance mismatch or stopped)`);
+                return;
+            }
+
             const t0 = performance.now();
 
             try {
-                // 获取当前帧数据 (ImageData)
-                // 注意：VisionSystem 需确保 getImageData 高效且不返回 null
                 const imgData = this.ctx.vision.getImageData();
-                
+
                 if (imgData) {
-                    // 执行一帧的业务逻辑
                     await this.onLoop(imgData);
                 }
             } catch (e) {
@@ -48,18 +74,35 @@ export abstract class BaseTask {
             }
 
             const dt = performance.now() - t0;
-            // 动态调整下一次执行时间，保持稳定的频率
-            if (this.running) {
-                setTimeout(loop, Math.max(10, this.interval - dt));
+
+            // 再次检查是否应该继续
+            if (this.running && this.loopInstanceId === currentInstanceId) {
+                this.loopTimeoutId = setTimeout(loop, Math.max(10, this.interval - dt));
             }
         };
-        
+
         loop(); // 启动循环
     }
 
+    /**
+     * 停止任务 - 清理所有资源
+     */
     stop() {
+        const wasRunning = this.running;
         this.running = false;
-        logger.info('task', `${this.name} stopped`);
+
+        // 清除待执行的定时器
+        if (this.loopTimeoutId) {
+            clearTimeout(this.loopTimeoutId);
+            this.loopTimeoutId = null;
+        }
+
+        // 递增实例 ID 使任何进行中的 loop 失效
+        this.loopInstanceId++;
+
+        if (wasRunning) {
+            logger.info('task', `${this.name} stopped`);
+        }
     }
 
     /**
@@ -74,7 +117,22 @@ export abstract class BaseTask {
     async sleep(ms: number) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
-	async onRegister(): Promise<void> {
-        // 默认不做任何事，子类可覆盖
+
+    /**
+     * 注册任务资源，子类可覆盖
+     * 注意: 只会被调用一次
+     */
+    async onRegister(): Promise<void> {
+        // 默认不做任何事
+    }
+
+    /**
+     * 销毁任务，释放所有资源
+     */
+    destroy() {
+        this.stop();
+        this.isRegistered = false;
+        logger.info('task', `${this.name} destroyed`);
     }
 }
+

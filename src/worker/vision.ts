@@ -38,9 +38,25 @@ function getMatchingMethod(method: string): number {
     }
 }
 
+// 工具函数：转换为灰度图 (减少75%数据量，加速匹配)
+function toGrayscale(mat: any): any {
+    const gray = new cv.Mat();
+    if (mat.channels() === 4) {
+        cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+    } else if (mat.channels() === 3) {
+        cv.cvtColor(mat, gray, cv.COLOR_RGB2GRAY);
+    } else {
+        return mat.clone();
+    }
+    return gray;
+}
+
+// 灰度模板缓存
+const grayTemplateCache = new Map<string, { mat: any, timestamp: number }>();
+
 // 优化的多尺度匹配函数
-function optimizedMatchTemplate(src: any, templ: any, config: any): { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean } {
-    let bestRes = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false };
+function optimizedMatchTemplate(src: any, templ: any, config: any): { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } {
+    let bestRes: { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false };
     const scales = config.scales || [1.0];
     const method = getMatchingMethod(config.matchingMethod || 'TM_CCOEFF_NORMED');
     const threshold = config.threshold || 0.8;
@@ -124,12 +140,12 @@ function matchWithROI(src: any, templ: any, roi: any, config: any): any {
     // 清理
     roiMat.delete();
 
-    // 调整坐标到原图
+    // 调整坐标到原图并标记使用了ROI
     if (result.score > 0) {
         result.x += roi.x;
         result.y += roi.y;
-        result.usedROI = true;
     }
+    result.usedROI = true;
 
     return result;
 }
@@ -192,14 +208,46 @@ self.onmessage = (e: MessageEvent) => {
                 }
             }
 
-            // 2. ROI或全屏匹配
+            // 2. [新增] 灰度转换 - 减少75%数据量，加速匹配
+            const useGrayscale = config.grayscale !== false;
+            let srcGray: any = null;
+            let templGray: any = null;
+            if (useGrayscale) {
+                srcGray = toGrayscale(src);
+                templGray = toGrayscale(templ);
+            }
+            const matchSrc = useGrayscale ? srcGray : src;
+            const matchTempl = useGrayscale ? templGray : templ;
+
+            // 3. ROI或全屏匹配
             let bestRes: any;
             if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
                 // ROI匹配：尝试所有ROI区域
                 bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
+                let validRoiFound = false;
 
                 for (const roi of config.roi.regions) {
-                    const roiResult = matchWithROI(src, templ, roi, config);
+                    // 关键修复: ROI坐标需要根据降采样因子缩放
+                    const scaledRoi = {
+                        x: Math.floor(roi.x * downsampleFactor),
+                        y: Math.floor(roi.y * downsampleFactor),
+                        w: Math.floor(roi.w * downsampleFactor),
+                        h: Math.floor(roi.h * downsampleFactor)
+                    };
+
+                    // 验证ROI边界，并确保ROI大于模板
+                    const templWidth = matchTempl.cols;
+                    const templHeight = matchTempl.rows;
+                    if (scaledRoi.x < 0 || scaledRoi.y < 0 ||
+                        scaledRoi.x + scaledRoi.w > matchSrc.cols ||
+                        scaledRoi.y + scaledRoi.h > matchSrc.rows ||
+                        scaledRoi.w <= templWidth || scaledRoi.h <= templHeight) {
+                        console.warn('ROI invalid (out of bounds or smaller than template), skipping:', scaledRoi);
+                        continue;
+                    }
+
+                    validRoiFound = true;
+                    const roiResult = matchWithROI(matchSrc, matchTempl, scaledRoi, config);
                     if (roiResult.score > bestRes.score) {
                         bestRes = roiResult;
                     }
@@ -209,11 +257,22 @@ self.onmessage = (e: MessageEvent) => {
                         break;
                     }
                 }
+
+                // 如果没有有效的ROI，回退到全屏匹配
+                if (!validRoiFound) {
+                    console.warn('No valid ROI found, falling back to full-screen match');
+                    bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
+                    bestRes.usedROI = false;
+                }
             } else {
                 // 全屏匹配
-                bestRes = optimizedMatchTemplate(src, templ, config);
+                bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
                 bestRes.usedROI = false;
             }
+
+            // 清理灰度图
+            if (srcGray) srcGray.delete();
+            if (templGray) templGray.delete();
 
             src.delete();
             if (!cacheHit) templ.delete();
@@ -246,12 +305,174 @@ self.onmessage = (e: MessageEvent) => {
                 }
             });
         }
+        // 批量匹配 - 多模板共用一个源图像，大幅减少开销
+        else if (type === 'BATCH_MATCH') {
+            const startTime = performance.now();
+            const { image, templates, config } = payload;
+            const results: any[] = [];
+
+            // 只创建一次源图像
+            let src = cv.matFromImageData(image);
+
+            // 降采样
+            const downsampleFactor = config.downsample || 0.33;
+            if (downsampleFactor !== 1.0) {
+                let dSrc = new cv.Mat();
+                cv.resize(src, dSrc, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
+                src.delete();
+                src = dSrc;
+            }
+
+            // 转灰度 (加速匹配)
+            const useGrayscale = config.grayscale !== false;
+            let srcGray: any = null;
+            if (useGrayscale) {
+                srcGray = toGrayscale(src);
+            }
+
+            const matchSrc = useGrayscale ? srcGray : src;
+            const threshold = config.threshold || 0.8;
+
+            // 顺序匹配所有模板
+            for (let i = 0; i < templates.length; i++) {
+                const template = templates[i];
+                const templateStartTime = performance.now();
+
+                // 获取或创建灰度模板
+                const templateKey = `gray_${template.width}x${template.height}_${downsampleFactor}`;
+                let templ: any;
+                let cacheHit = false;
+
+                if (grayTemplateCache.has(template.name || templateKey)) {
+                    templ = grayTemplateCache.get(template.name || templateKey)!.mat;
+                    cacheHit = true;
+                } else {
+                    templ = cv.matFromImageData(template.data);
+
+                    // 降采样模板
+                    if (downsampleFactor !== 1.0) {
+                        let dTempl = new cv.Mat();
+                        cv.resize(templ, dTempl, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
+                        templ.delete();
+                        templ = dTempl;
+                    }
+
+                    // 转灰度
+                    if (useGrayscale) {
+                        const grayTempl = toGrayscale(templ);
+                        templ.delete();
+                        templ = grayTempl;
+                    }
+
+                    // 缓存
+                    grayTemplateCache.set(template.name || templateKey, {
+                        mat: templ.clone(),
+                        timestamp: Date.now()
+                    });
+                }
+
+                // 匹配 - 优先使用模板级 ROI，其次全局 ROI，最后全屏
+                let matchResult: any;
+
+                // 1. 检查模板级 ROI (template.roi)
+                if (template.roi && template.roi.x !== undefined) {
+                    const scaledRoi = {
+                        x: Math.floor(template.roi.x * downsampleFactor),
+                        y: Math.floor(template.roi.y * downsampleFactor),
+                        w: Math.floor(template.roi.w * downsampleFactor),
+                        h: Math.floor(template.roi.h * downsampleFactor)
+                    };
+                    // 确保 ROI 在图像范围内且大于模板
+                    if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
+                        scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
+                        scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
+                        scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
+                        matchResult = matchWithROI(matchSrc, templ, scaledRoi, config);
+                    } else {
+                        // ROI 无效，回退到全屏
+                        matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                    }
+                }
+                // 2. 检查全局 ROI (config.roi)
+                else if (config.roi && config.roi.enabled && config.roi.regions?.length > 0) {
+                    matchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
+                    for (const roi of config.roi.regions) {
+                        const scaledRoi = {
+                            x: Math.floor(roi.x * downsampleFactor),
+                            y: Math.floor(roi.y * downsampleFactor),
+                            w: Math.floor(roi.w * downsampleFactor),
+                            h: Math.floor(roi.h * downsampleFactor)
+                        };
+                        if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
+                            scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
+                            scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
+                            scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
+                            const roiResult = matchWithROI(matchSrc, templ, scaledRoi, config);
+                            if (roiResult.score > matchResult.score) {
+                                matchResult = roiResult;
+                            }
+                        }
+                    }
+                }
+                // 3. 全屏匹配
+                else {
+                    matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                }
+
+                const templateDuration = performance.now() - templateStartTime;
+
+                const factor = 1.0 / downsampleFactor;
+                results.push({
+                    name: template.name || `template_${i}`,
+                    score: matchResult.score,
+                    x: matchResult.x * factor,
+                    y: matchResult.y * factor,
+                    matched: matchResult.score >= threshold,
+                    duration: Math.round(templateDuration * 100) / 100,
+                    cacheHit,
+                    usedROI: matchResult.usedROI || false
+                });
+
+                if (!cacheHit) {
+                    templ.delete();
+                }
+
+                // 早期退出：如果配置了 earlyExit 且找到匹配
+                if (config.earlyExit && matchResult.score >= threshold) {
+                    break;
+                }
+            }
+
+            // 清理
+            if (srcGray) srcGray.delete();
+            src.delete();
+
+            const totalDuration = performance.now() - startTime;
+            matchCount += templates.length;
+            totalTime += totalDuration;
+
+            self.postMessage({
+                id,
+                type: 'BATCH_MATCH_RESULT',
+                result: {
+                    results,
+                    totalDuration: Math.round(totalDuration * 100) / 100,
+                    templateCount: templates.length,
+                    matchedCount: results.filter(r => r.matched).length
+                }
+            });
+        }
         else if (type === 'CLEAR_CACHE') {
             // 清理缓存
             for (const [key, value] of templateCache.entries()) {
                 value.mat.delete();
             }
             templateCache.clear();
+            // 清理灰度缓存
+            for (const [key, value] of grayTemplateCache.entries()) {
+                value.mat.delete();
+            }
+            grayTemplateCache.clear();
             self.postMessage({ type: 'CACHE_CLEARED' });
         }
         else if (type === 'GET_STATS') {
@@ -260,6 +481,7 @@ self.onmessage = (e: MessageEvent) => {
                 type: 'STATS',
                 stats: {
                     cacheSize: templateCache.size,
+                    grayCacheSize: grayTemplateCache.size,
                     matchCount,
                     averageTime: matchCount > 0 ? Math.round((totalTime / matchCount) * 100) / 100 : 0,
                     totalTime: Math.round(totalTime * 100) / 100

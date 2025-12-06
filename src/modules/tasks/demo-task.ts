@@ -11,29 +11,32 @@ export class AutoSkipTask extends BaseTask {
     // 可选：初始化时注册图片
     async onRegister() {
         // 这是一个示例 Base64，实际开发中你需要用截图工具获取
-        await this.ctx.algo.register('auto_skip_dialog_icon', 'data:image/png;base64,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');
-        await this.ctx.algo.register('auto_skip_linxing_icon', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABMAAAAWCAYAAAAinad/AAAEpUlEQVR4ATSUWW8cRRSFv67eZvGMZ8aOx2ObRCYJCQGSiATEC4udkAQBigQSEgjxwgP5FbzwJ0EE4sSeffHsvVVXcW2Jh6sqdd0+de6555b68oun9iKeHD21z46f2a9k/froiX1+/MR+f/zI/vj4M/vTo4f2xfOP7e+/Hts/fvvcvvjmtv3l8V378+NP7A/Hn9rvjo7st0fHVimb42JwHYsna+DkhI6R0BRUKrGmsaG52vQ43PPZ33I4bAU0yrGczSVvTeDEBKQoJSD/hysgvhIglREqLZFQLWreaoa0thUFd0HRW/NWq8xB06VSXOE7C4mIwElQroB5F4HlYvUFMBCgQEmCWrHfLLB7pYRjM/q9Ht12nzzVNLcrclaiWs4EbCmRCBg5ymSCnIOOQfbYhFIQce2gQGsnQJHQ6U45PYvo9HLa3Qgcn2azTktYb5QSIRIJmDWCanFFu9A1uMSEXsx+q0Rrp0yep5y1B/SHEeukRKwr9EYZ7d6aTCuaOw0O9qpslDTKwxEwhWc1gWhVk483rm1KGSGg6fbm9Ec5cVrGqhqpLbNKi7zuZJx2U4z12dmusr8bCjMHoaiFUSICxyJukb1mEc+1DIdThqOIVeSJGCWS3Cc1AdoWiNKQXl/K7s7QGnZ3asJMBHdFk0rZcCiMWlc8nHzF6ZsB7faS5dol1YGU57BOc6I4I82sACiSzJNyI3qDCGNcAZPSCkHGhUZ7u1KKTi47NhZGSepLjwtCP5CSwVUQ+ApPObiOIwK5ZIli0FtJzFGlohUBK7SaPjqdMR4uGQ0yosgHSniuT+C54i8o+5aiNClwMgqeFQcgzSrgmJDzYY5qSq2tVh3f00zGXcajCTZ3L5MKni+NMRSkESVHUzQJVT+npDJCsU9BJAqtxccVe3ko5SkcBSa3WGNx5WZsLGOScQFQyjPKRlMTwE0npWwjqm7KhgAWJa+scgK5RJGhuv2xCDgltyHN5gG1WpVS0UhnF2x4c6rBjHo4o1GYsl2UvT+hEUypy1qXs5IzltLnkr9Ejc8TMeVC2hyTmyL7+y2aV4ps1xNuva24fyfg7m24cz3j/RuaD27k3LtuePCOw4e3FO9JTquxZG8nR0WJI6aM+OfknNP2TNpt2dra5OBgk1bL59bNCg/uXeHB/a3LeHi3wUeyf3h/m3dvljm8GooTQrYaPiqRkYjFR5O55VRG5Ky7IDMifOAznQ3EY1NQCzx/LU1aEoYrgmAhOsvFesxoeoYbIj5MUKlxxN0BqS1wvjCcdtd0BrEY1MeoAqPzGcPJWEATATUyqwlJGsn3If3hUP51ZDJcyclQWmyZWEgMRHnAZOnyuqs5GzjE+RbzuEB/nMpwR/JTKKAhFzoPxzGRmFrbujQQ3rQN0mBIjRUgiI1iKQmdcca/8ty8kecmzuusdYXeJGMyzy/Z98aJDHtIYmtyqeZVO2EwE59lXIAYOXAuAVMUqRNeMnzVSeiMFKtMXgtT46+TCS/PpkR2g4Xe5PXA8LKT0l94RFSEmbDSAphaI7aD2ErI0C60T3/m8PdpxEk3Z6lrZGqHtZQ1F6CTgeVPOevNPeZZkZUJ+A8AAP//t6I3NQAAAAZJREFUAwDWgnvXg5CljwAAAABJRU5ErkJggg==');
-		logger.info('task', 'AutoSkipTask assets loaded');
+        await this.ctx.algo.register('auto_skip_dialog_icon', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAlCAYAAAAwYKuzAAAABklEQVQDAFRfMJnDeIcFAAAAAElFTkSuQmCC');
+        await this.ctx.algo.register('auto_skip_linxing_icon', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABMAAAAWCAYAAAAinad/AAAABklEQVQDADWgnvXg5CljwAAAABJRU5ErkJggg==');
+        logger.info('task', 'AutoSkipTask assets loaded');
     }
 
     async onLoop(screen: ImageData) {
-        // 1. 查找屏幕上是否有对话图标，使用 UI 面板上的配置参数
-        const res = await this.ctx.algo.findAsync(screen, 'auto_skip_dialog_icon', {
-            threshold: this.ctx.engine.config.threshold, // 使用 UI 面板配置的阈值
-            downsample: this.ctx.engine.config.downsample
-        });
-        const res1 = await this.ctx.algo.findAsync(screen, 'auto_skip_linxing_icon', {
-            threshold: this.ctx.engine.config.threshold, // 使用 UI 面板配置的阈值
-            downsample: this.ctx.engine.config.downsample
+        // 使用批量匹配 API - 一次性检查多个图标，大幅减少耗时
+        const results = await this.ctx.algo.findBatchAsync(screen, [
+            'auto_skip_dialog_icon',
+            'auto_skip_linxing_icon'
+        ], {
+            threshold: this.ctx.engine.config.threshold,
+            downsample: this.ctx.engine.config.downsample,
+            earlyExit: true  // 找到任意一个就立即返回
         });
 
-        if (res || res1) {
-            logger.info('task', `Found dialog (confidence: ${Math.max(res?.score || 0, res1?.score || 0).toFixed(3)}, threshold: ${this.ctx.engine.config.threshold}, downsample: ${this.ctx.engine.config.downsample}), skipping...`);
+        // 查找第一个匹配的结果
+        const matched = results.find(r => r !== null);
 
-            // 2. 如果找到了，按下 'A' 键（Xbox 手柄确认键）
+        if (matched) {
+            logger.info('task', `Found ${matched.name} (score: ${matched.score.toFixed(3)}), skipping...`);
+
+            // 按下 'A' 键（Xbox 手柄确认键）
             await this.ctx.input.tap('A');
 
-            // 3. 稍微等待，防止连点过快
+            // 稍微等待，防止连点过快
             await this.sleep(200);
         }
     }

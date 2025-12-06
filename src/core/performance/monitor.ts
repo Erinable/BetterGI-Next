@@ -17,6 +17,12 @@ export class PerformanceMonitor {
   private measurementStack: Map<string, number> = new Map();
   private memoryBaseline: number = 0;
 
+  // 节流相关
+  private lastLogTime: Map<string, number> = new Map();
+  private logThrottleMs = 1000; // 相同类型日志最小间隔
+  private isPaused = false; // 页面不可见时暂停
+  private intervalIds: number[] = []; // 存储定时器ID用于清理
+
   constructor(config?: Partial<PerformanceConfig>) {
     this.config = {
       enabled: true,
@@ -76,28 +82,54 @@ export class PerformanceMonitor {
   }
 
   private startPeriodicTasks(): void {
+    // 监听页面可见性变化，不可见时暂停监控
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        this.isPaused = document.hidden;
+        if (this.config.enabled && !this.isPaused) {
+          logger.debug('performance', 'Performance monitoring resumed');
+        }
+      });
+    }
+
     // 每30秒更新一次指标
-    setInterval(() => {
-      if (this.config.enabled) {
+    const id1 = window.setInterval(() => {
+      if (this.config.enabled && !this.isPaused) {
         this.updateMetrics();
         this.checkThresholds();
       }
     }, 30000);
+    this.intervalIds.push(id1);
 
     // 每5分钟清理一次旧记录
-    setInterval(() => {
-      if (this.config.enabled) {
+    const id2 = window.setInterval(() => {
+      if (this.config.enabled && !this.isPaused) {
         this.cleanupRecords();
       }
     }, 5 * 60 * 1000);
+    this.intervalIds.push(id2);
 
     // 定期生成报告
     if (this.config.enableReports) {
-      setInterval(() => {
-        if (this.config.enabled) {
+      const id3 = window.setInterval(() => {
+        if (this.config.enabled && !this.isPaused) {
           this.generateReport();
         }
       }, this.config.reportInterval * 60 * 1000);
+      this.intervalIds.push(id3);
+    }
+  }
+
+  /**
+   * 节流日志 - 相同类型日志在指定时间内只输出一次
+   */
+  private throttledLog(category: string, message: string, data?: any): void {
+    const now = Date.now();
+    const lastTime = this.lastLogTime.get(category) || 0;
+
+    if (now - lastTime >= this.logThrottleMs) {
+      logger.debug('performance', message, data);
+      this.lastLogTime.set(category, now);
     }
   }
 
@@ -148,7 +180,6 @@ export class PerformanceMonitor {
   private recordOperation(record: any): void {
     if (record.category === 'vision' && record.operation.includes('match')) {
       this.recordMatch({
-        timestamp: record.timestamp,
         duration: record.duration,
         score: 0, // 需要从实际匹配结果中获取
         scale: 1.0,
@@ -228,45 +259,54 @@ export class PerformanceMonitor {
     }
   }
 
-  // 缓存性能记录
-  recordCacheHit(type: 'template' | 'frame' | 'result', key: string, accessTime?: number): void {
+  // 缓存性能记录 - 支持简化调用 (兼容旧API)
+  recordCacheHit(type?: 'template' | 'frame' | 'result', key?: string, accessTime?: number): void {
+    if (this.isPaused) return;
     this.metrics.cacheHits++;
     this.updateCacheHitRate();
 
-    const cacheRecord: CacheRecord = {
-      timestamp: Date.now(),
-      type,
-      hit: true,
-      key,
-      accessTime
-    };
+    // 只有完整参数时才记录详细信息
+    if (type && key) {
+      const cacheRecord: CacheRecord = {
+        timestamp: Date.now(),
+        type,
+        hit: true,
+        key,
+        accessTime
+      };
+      this.cacheRecords.push(cacheRecord);
 
-    this.cacheRecords.push(cacheRecord);
+      // 使用节流日志
+      this.throttledLog('cache_hit', `Cache hit: ${type}`, { key, accessTime });
 
-    logger.debug('performance', `Cache hit: ${type}`, { key, accessTime }, ['cache', 'hit']);
-
-    if (this.cacheRecords.length > this.config.maxRecords.cache) {
-      this.cacheRecords = this.cacheRecords.slice(-this.config.maxRecords.cache);
+      if (this.cacheRecords.length > this.config.maxRecords.cache) {
+        this.cacheRecords = this.cacheRecords.slice(-this.config.maxRecords.cache);
+      }
     }
   }
 
-  recordCacheMiss(type: 'template' | 'frame' | 'result', key: string): void {
+  // 支持简化调用 (兼容旧API)
+  recordCacheMiss(type?: 'template' | 'frame' | 'result', key?: string): void {
+    if (this.isPaused) return;
     this.metrics.cacheMisses++;
     this.updateCacheHitRate();
 
-    const cacheRecord: CacheRecord = {
-      timestamp: Date.now(),
-      type,
-      hit: false,
-      key
-    };
+    // 只有完整参数时才记录详细信息
+    if (type && key) {
+      const cacheRecord: CacheRecord = {
+        timestamp: Date.now(),
+        type,
+        hit: false,
+        key
+      };
+      this.cacheRecords.push(cacheRecord);
 
-    this.cacheRecords.push(cacheRecord);
+      // 使用节流日志
+      this.throttledLog('cache_miss', `Cache miss: ${type}`, { key });
 
-    logger.debug('performance', `Cache miss: ${type}`, { key }, ['cache', 'miss']);
-
-    if (this.cacheRecords.length > this.config.maxRecords.cache) {
-      this.cacheRecords = this.cacheRecords.slice(-this.config.maxRecords.cache);
+      if (this.cacheRecords.length > this.config.maxRecords.cache) {
+        this.cacheRecords = this.cacheRecords.slice(-this.config.maxRecords.cache);
+      }
     }
   }
 
@@ -537,6 +577,99 @@ export class PerformanceMonitor {
       totalMatchTime,
       frameCount: recentFrames.length
     };
+  }
+
+  // ===== 兼容旧 API 的方法 =====
+
+  /**
+   * 启用/禁用监控 (兼容旧API)
+   */
+  setEnabled(enabled: boolean): void {
+    this.config.enabled = enabled;
+  }
+
+  /**
+   * 获取性能统计 (兼容旧API)
+   */
+  getPerformanceStats() {
+    return {
+      overall: this.getMetrics(),
+      recent: this.getRecentStats(5),
+      recommendations: this.generateRecommendations()
+    };
+  }
+
+  /**
+   * 开始匹配测量 (兼容旧API)
+   * 返回一个包含 end 方法的对象
+   */
+  startMatch(): { end: (result: any) => void } {
+    if (!this.config.enabled || this.isPaused) {
+      return { end: () => {} };
+    }
+
+    const startTime = performance.now();
+
+    return {
+      end: (result: any) => {
+        const duration = performance.now() - startTime;
+        this.recordMatchSimple(duration, result);
+      }
+    };
+  }
+
+  /**
+   * 简化的匹配记录 (兼容旧API)
+   * @param duration 匹配耗时 (ms)
+   * @param result 匹配结果对象
+   */
+  recordMatchSimple(duration: number, result: any): void {
+    if (this.isPaused) return;
+
+    this.metrics.matchCount++;
+    this.metrics.totalMatchTime += duration;
+    this.metrics.averageMatchTime = this.metrics.totalMatchTime / this.metrics.matchCount;
+    this.metrics.bestMatchTime = Math.min(this.metrics.bestMatchTime, duration);
+    this.metrics.worstMatchTime = Math.max(this.metrics.worstMatchTime, duration);
+
+    // 更新ROI统计
+    if (result?.usedROI) {
+      this.metrics.roiMatches++;
+    } else {
+      this.metrics.fullScreenMatches++;
+    }
+
+    // 更新自适应缩放统计
+    if (result?.adaptiveScaling) {
+      this.metrics.adaptiveScalingAttempts++;
+      if (result?.score > 0.8) {
+        this.metrics.adaptiveScalingSuccesses++;
+      }
+    }
+
+    // 使用节流日志
+    this.throttledLog('match', 'Match recorded', {
+      duration,
+      score: result?.score,
+      totalMatches: this.metrics.matchCount
+    });
+  }
+
+  /**
+   * 简化的帧记录 (兼容旧API - 无参数版本)
+   */
+  recordFrameSimple(): void {
+    if (this.isPaused) return;
+    this.metrics.frameCount++;
+  }
+
+  /**
+   * 销毁监控，清理定时器
+   */
+  destroy(): void {
+    this.intervalIds.forEach(id => clearInterval(id));
+    this.intervalIds = [];
+    logger.info('performance', 'Performance monitor destroyed');
   }
 }
 

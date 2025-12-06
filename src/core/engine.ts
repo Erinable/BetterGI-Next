@@ -55,6 +55,14 @@ export class Engine {
 
         // [关键] 截图请求现在无论 Input 是否就绪，都能被处理
         bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
+
+        // [新增] 响应 UI 的状态查询
+        bus.on(EVENTS.ENGINE_QUERY_STATE, () => {
+            bus.emit(EVENTS.ENGINE_STATE_CHANGE, {
+                running: !!this.activeTask && this.activeTask.running,
+                taskName: this.activeTask ? this.activeTask.name : undefined
+            });
+        });
     }
     private async init() {
         const endMeasurement = performanceMonitor.startMeasurement('engine_init', 'system');
@@ -83,12 +91,13 @@ export class Engine {
                 const inputDetails = {
                     channelConnected: !!this.input.channel,
                     channelType: this.input.channel?.constructor?.name || 'Unknown',
-                    supportedKeys: Object.keys(this.input.state).filter(key => this.input.state[key] !== undefined)
+                    supportedKeys: Object.keys(this.input.state)
                 };
                 logger.info('engine', '📊 输入系统详细信息', inputDetails);
 
-            } catch (inputError) {
-                logger.error('engine', '❌ 输入系统初始化失败', { error: inputError.message });
+            } catch (inputError: unknown) {
+                const errorMessage = inputError instanceof Error ? inputError.message : String(inputError);
+                logger.error('engine', '❌ 输入系统初始化失败', { error: errorMessage });
                 logger.warn('engine', '⚠️ 继续初始化其他系统，但输入功能将不可用');
                 // 不抛出错误，允许其他系统继续初始化
             }
@@ -121,13 +130,8 @@ export class Engine {
             };
             logger.info('engine', '📊 算法系统状态', algoStatus);
 
-            // 监听 UI 事件
-            logger.info('engine', '🔗 设置事件监听器...');
-            bus.on(EVENTS.TASK_START, (name: string) => this.startTask(name));
-            bus.on(EVENTS.TASK_STOP, () => this.stopTask());
-            bus.on(EVENTS.CONFIG_UPDATE, (cfg: any) => this.updateConfig(cfg));
-            bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
-            logger.info('engine', '✅ 事件监听器设置完成');
+            // 事件监听器已在 constructor 的 bindEvents() 中设置
+            logger.info('engine', '✅ 事件监听器已就绪 (通过 bindEvents)');
 
             // 模块就绪状态总结
             const moduleStatus = {
@@ -193,9 +197,9 @@ export class Engine {
 
             logger.info('engine', `Registering task: ${task.name}`);
 
-            // [新增] 自动调用初始化钩子
+            // [新增] 自动调用初始化钩子 (只会执行一次)
             try {
-                await task.onRegister();
+                await task.safeRegister();
                 logger.info('engine', `Task ${task.name} registered successfully`);
             } catch (e) {
                 logger.error('engine', `Failed to register task ${task.name}`, { error: e });
@@ -238,6 +242,7 @@ export class Engine {
 
             task.start();
             bus.emit(EVENTS.STATUS_UPDATE, `运行中: ${task.name}`);
+            bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: true, taskName: task.name });
 
             logger.info('engine', `Task ${name} started successfully`);
 
@@ -265,6 +270,7 @@ export class Engine {
         // [新增] 停止任务时，立即清理屏幕上的绿框
         bus.emit(EVENTS.DEBUG_CLEAR);
         bus.emit(EVENTS.STATUS_UPDATE, '已停止');
+        bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: false });
     }
 
     updateConfig(cfg: any) {
@@ -339,9 +345,29 @@ export class Engine {
             // 额外检查：如果截图全是透明或纯黑，可能是截到了无效区域
             // 这里简单检查一下 data 长度确保不是空的
             if (templateData.data.length > 0) {
-                logger.info('engine', 'Crop successful, starting preview');
-                bus.emit(EVENTS.STATUS_UPDATE, '截图成功! 已复制到剪贴板');
-                this.startPreviewTask(templateData);
+                logger.info('engine', 'Crop successful, starting ScreenshotMatchTask');
+                bus.emit(EVENTS.STATUS_UPDATE, '截图成功! 开始匹配任务');
+
+                // 动态导入并启动 ScreenshotMatchTask
+                const { ScreenshotMatchTask } = await import('../modules/tasks/screenshot-match-task');
+                const task = new ScreenshotMatchTask(templateData);
+                task.ctx = {
+                    input: this.input,
+                    vision: this.vision,
+                    algo: this.algo,
+                    engine: this
+                };
+
+                // 停止之前的任务
+                this.stopTask();
+
+                // 启动新任务
+                this.activeTask = task;
+                task.start();
+
+                // 通知 UI 任务已启动
+                bus.emit(EVENTS.STATUS_UPDATE, '截图匹配任务运行中...');
+                bus.emit(EVENTS.ENGINE_STATE_CHANGE, { running: true, taskName: '截图匹配' });
                 return;
             }
         }
@@ -354,81 +380,5 @@ export class Engine {
         // 浏览器的 "User Activation" 机制要求 alert 必须在用户操作的回调栈中直接调用
         alert('❌ 截图失败\n\n未检测到有效的游戏画面。\n请等待游戏完全加载并显示画面后再试。');
     }
-
-
-	startPreviewTask(template: ImageData) {
-        this.stopTask();
-
-        const previewTask = {
-            name: 'Preview',
-            running: true,
-            ctx: { vision: this.vision, algo: this.algo } as any,
-            start: () => {
-                logger.info('engine', 'Starting preview mode');
-
-                const loop = async () => {
-                    if (!previewTask.running) return;
-
-                    const screen = this.vision.getImageData();
-                    if (screen) {
-                        const t0 = performance.now();
-
-						// [关键修改] 使用 this.config 中的动态参数
-                        const rawRes = await this.vision.match(screen, template, {
-                            threshold: this.config.threshold,   // 动态阈值
-                            downsample: this.config.downsample, // 动态降采样
-                            scales: this.config.scales          // 动态多尺度
-                        });
-
-                        // [关键修复] Worker 不返回宽高，我们需要手动补全
-                        // 从传入的 template (ImageData) 中获取宽高
-                        const res = rawRes ? {
-                            ...rawRes,
-                            w: template.width,
-                            h: template.height
-                        } : null;
-
-                        const cost = performance.now() - t0;
-
-                        if (res && res.score >= (this.config.threshold)) {
-                            const info = this.vision.getDisplayInfo();
-
-                            if (info && this.config.debug) {
-                                // 坐标映射
-                                const screenX = info.offsetX + (res.x * info.scaleX);
-                                const screenY = info.offsetY + (res.y * info.scaleY);
-                                const screenW = res.w * info.scaleX;
-                                const screenH = res.h * info.scaleY;
-
-                                // 这里的 scaleX/Y 已经是最终缩放了 (Worker 内部处理了 downsample 和 scales 的反算)
-                                // 但有一个细节：多尺度匹配(scales)返回的 res.w/h 是原始模板大小
-                                // 如果匹配到了 1.2倍 的物体，视觉上框应该变大。
-                                // 为了简单，目前画的框是固定大小的。
-                                // 如果想要框跟随缩放变化，可以使用 res.bestScale (如果 Worker 返回了的话)
-                                // Worker v31 代码里确实返回了 bestScale，所以我们可以利用它：
-                                const matchScale = (res as any).bestScale || 1.0;
-                                const finalW = screenW * matchScale;
-                                const finalH = screenH * matchScale;
-                                bus.emit(EVENTS.DEBUG_DRAW, {
-                                    x: screenX + finalW/2,
-                                    y: screenY + finalH/2,
-                                    w: finalW,
-                                    h: finalH,
-                                    score: res.score,
-                                    cost: cost,
-                                    label: 'Preview'
-                                });
-                            }
-                        }
-                    }
-                    if (previewTask.running) setTimeout(loop, 100);
-                };
-                loop();
-            },
-            stop: () => { previewTask.running = false; }
-        };
-
-        this.activeTask = previewTask as any;
-        previewTask.start();
-    }
 }
+
