@@ -76,4 +76,70 @@ export class AlgoSystem {
 
         return null;
     }
+
+    /**
+     * 批量异步查找多个目标 - 共用一个源图像，大幅提升性能
+     * @param screen 当前屏幕截图
+     * @param names 素材名称数组
+     * @param options 匹配参数
+     * @returns 匹配结果数组
+     */
+    async findBatchAsync(
+        screen: ImageData,
+        names: string[],
+        options: { threshold?: number; downsample?: number; earlyExit?: boolean } = {}
+    ): Promise<Array<{
+        name: string;
+        score: number;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        matched: boolean;
+    } | null>> {
+        // 收集有效的模板
+        const templates: Array<{ name: string; data: ImageData }> = [];
+        const assetMap = new Map<string, { width: number; height: number }>();
+
+        for (const name of names) {
+            const asset = this.assets.get(name);
+            if (asset) {
+                templates.push({ name, data: asset.template });
+                assetMap.set(name, { width: asset.template.width, height: asset.template.height });
+            } else {
+                logger.warn('algo', `Asset not found: ${name}`);
+            }
+        }
+
+        if (templates.length === 0) {
+            return names.map(() => null);
+        }
+
+        // 调用批量匹配
+        const result = await this._vision.batchMatch(screen, templates, {
+            threshold: options.threshold || 0.8,
+            downsample: options.downsample || 0.33,
+            earlyExit: options.earlyExit || false
+        });
+
+        // 转换结果格式
+        const resultMap = new Map(result.results.map(r => [r.name, r]));
+
+        return names.map(name => {
+            const matchResult = resultMap.get(name);
+            if (!matchResult || !matchResult.matched) {
+                return null;
+            }
+            const asset = assetMap.get(name);
+            return {
+                name,
+                score: matchResult.score,
+                x: matchResult.x,
+                y: matchResult.y,
+                w: asset?.width || 0,
+                h: asset?.height || 0,
+                matched: true
+            };
+        });
+    }
 }

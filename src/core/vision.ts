@@ -79,6 +79,17 @@ export class VisionSystem {
                     this.callbacks.get(id)!(result);
                     this.callbacks.delete(id);
                 }
+            } else if (type === 'BATCH_MATCH_RESULT') {
+                // 批量匹配结果
+                if (this.callbacks.has(id)) {
+                    logger.debug('vision', 'Batch match completed', {
+                        templateCount: result.templateCount,
+                        matchedCount: result.matchedCount,
+                        totalDuration: result.totalDuration
+                    });
+                    this.callbacks.get(id)!(result);
+                    this.callbacks.delete(id);
+                }
             } else if (type === 'STATS') {
                 // Worker统计信息回调
                 logger.debug('vision', 'Worker stats received', { stats: result.stats });
@@ -395,6 +406,81 @@ export class VisionSystem {
     setROIRegions(regions: Array<{ x: number, y: number, w: number, h: number, name: string }>) {
         // ROI配置通过match方法的options参数传递
         bus.emit(EVENTS.CONFIG_UPDATE, { roiRegions: regions });
+    }
+
+    /**
+     * 批量匹配 - 多个模板共用一个源图像，大幅减少开销
+     * @param screen 屏幕截图
+     * @param templates 模板数组 [{name, data: ImageData}]
+     * @param options 匹配配置
+     * @returns 匹配结果数组
+     */
+    batchMatch(
+        screen: ImageData,
+        templates: Array<{ name: string, data: ImageData }>,
+        options: {
+            threshold?: number;
+            downsample?: number;
+            grayscale?: boolean;
+            earlyExit?: boolean;
+        } = {}
+    ): Promise<{
+        results: Array<{
+            name: string;
+            score: number;
+            x: number;
+            y: number;
+            matched: boolean;
+            duration: number;
+        }>;
+        totalDuration: number;
+        matchedCount: number;
+    }> {
+        return new Promise((resolve, reject) => {
+            const id = this.msgId++;
+
+            const timeoutId = setTimeout(() => {
+                this.callbacks.delete(id);
+                reject(new Error('Batch match timeout'));
+            }, 30000);
+
+            this.callbacks.set(id, (result: any) => {
+                clearTimeout(timeoutId);
+                resolve(result);
+            });
+
+            // 创建安全副本
+            const screenDataClone = new Uint8ClampedArray(screen.data);
+            const screenClone = new ImageData(screenDataClone, screen.width, screen.height);
+
+            // 模板副本
+            const templatesClone = templates.map(t => {
+                const dataClone = new Uint8ClampedArray(t.data.data);
+                return {
+                    name: t.name,
+                    data: new ImageData(dataClone, t.data.width, t.data.height),
+                    width: t.data.width,
+                    height: t.data.height
+                };
+            });
+
+            const transfer = [screenDataClone.buffer, ...templatesClone.map(t => t.data.data.buffer)];
+
+            this._worker.postMessage({
+                id,
+                type: 'BATCH_MATCH',
+                payload: {
+                    image: screenClone,
+                    templates: templatesClone,
+                    config: {
+                        threshold: options.threshold || 0.8,
+                        downsample: options.downsample || 0.33,
+                        grayscale: options.grayscale !== false,
+                        earlyExit: options.earlyExit || false
+                    }
+                }
+            }, transfer);
+        });
     }
 
     /**
