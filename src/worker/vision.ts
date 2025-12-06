@@ -224,6 +224,7 @@ self.onmessage = (e: MessageEvent) => {
             if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
                 // ROI匹配：尝试所有ROI区域
                 bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
+                let validRoiFound = false;
 
                 for (const roi of config.roi.regions) {
                     // 关键修复: ROI坐标需要根据降采样因子缩放
@@ -234,17 +235,18 @@ self.onmessage = (e: MessageEvent) => {
                         h: Math.floor(roi.h * downsampleFactor)
                     };
 
-                    // 验证ROI边界
-                    const srcWidth = matchSrc.cols;
-                    const srcHeight = matchSrc.rows;
+                    // 验证ROI边界，并确保ROI大于模板
+                    const templWidth = matchTempl.cols;
+                    const templHeight = matchTempl.rows;
                     if (scaledRoi.x < 0 || scaledRoi.y < 0 ||
-                        scaledRoi.x + scaledRoi.w > srcWidth ||
-                        scaledRoi.y + scaledRoi.h > srcHeight ||
-                        scaledRoi.w <= 0 || scaledRoi.h <= 0) {
-                        console.warn('ROI out of bounds after scaling, skipping:', scaledRoi);
+                        scaledRoi.x + scaledRoi.w > matchSrc.cols ||
+                        scaledRoi.y + scaledRoi.h > matchSrc.rows ||
+                        scaledRoi.w <= templWidth || scaledRoi.h <= templHeight) {
+                        console.warn('ROI invalid (out of bounds or smaller than template), skipping:', scaledRoi);
                         continue;
                     }
 
+                    validRoiFound = true;
                     const roiResult = matchWithROI(matchSrc, matchTempl, scaledRoi, config);
                     if (roiResult.score > bestRes.score) {
                         bestRes = roiResult;
@@ -254,6 +256,13 @@ self.onmessage = (e: MessageEvent) => {
                     if (config.earlyTermination && roiResult.score >= 0.95) {
                         break;
                     }
+                }
+
+                // 如果没有有效的ROI，回退到全屏匹配
+                if (!validRoiFound) {
+                    console.warn('No valid ROI found, falling back to full-screen match');
+                    bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
+                    bestRes.usedROI = false;
                 }
             } else {
                 // 全屏匹配
