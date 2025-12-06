@@ -189,9 +189,9 @@ export class Engine {
 
             logger.info('engine', `Registering task: ${task.name}`);
 
-            // [新增] 自动调用初始化钩子
+            // [新增] 自动调用初始化钩子 (只会执行一次)
             try {
-                await task.onRegister();
+                await task.safeRegister();
                 logger.info('engine', `Task ${task.name} registered successfully`);
             } catch (e) {
                 logger.error('engine', `Failed to register task ${task.name}`, { error: e });
