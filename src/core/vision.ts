@@ -1,5 +1,5 @@
 import { bus, EVENTS } from '../utils/event-bus';
-import { performanceMonitor } from './performance-monitor';
+import { performanceMonitor } from './performance/monitor';
 import { logger } from './logging/logger';
 
 interface FrameCache {
@@ -74,7 +74,7 @@ export class VisionSystem {
                         adaptiveScaling: result.adaptiveScaling
                     };
 
-                    performanceMonitor.recordMatch(result.performance?.duration || 0, performanceData);
+                    performanceMonitor.recordMatchSimple(result.performance?.duration || 0, performanceData);
 
                     this.callbacks.get(id)!(result);
                     this.callbacks.delete(id);
@@ -177,7 +177,7 @@ export class VisionSystem {
 
         // 记录帧捕获
         if (this.performanceEnabled) {
-            performanceMonitor.recordFrame();
+            performanceMonitor.recordFrameSimple();
         }
 
         if (this.canvas.width !== w || this.canvas.height !== h) {
