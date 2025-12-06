@@ -52,6 +52,8 @@ export const EVENTS = {
     DEBUG_CLEAR: 'debug:clear', // [新增] 强制清空调试层
     TASK_START: 'task:start',
     TASK_STOP: 'task:stop',
+    TASK_PAUSE: 'task:pause',
+    TASK_RESUME: 'task:resume',
     CONFIG_UPDATE: 'config:update',
     CROP_REQUEST: 'crop:request',
     TASK_LIST_UPDATE: 'TASK_LIST_UPDATE',

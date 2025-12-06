@@ -180,7 +180,6 @@ export class PerformanceMonitor {
   private recordOperation(record: any): void {
     if (record.category === 'vision' && record.operation.includes('match')) {
       this.recordMatch({
-        timestamp: record.timestamp,
         duration: record.duration,
         score: 0, // 需要从实际匹配结果中获取
         scale: 1.0,

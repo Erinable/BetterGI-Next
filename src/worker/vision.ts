@@ -55,8 +55,8 @@ function toGrayscale(mat: any): any {
 const grayTemplateCache = new Map<string, { mat: any, timestamp: number }>();
 
 // 优化的多尺度匹配函数
-function optimizedMatchTemplate(src: any, templ: any, config: any): { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean } {
-    let bestRes = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false };
+function optimizedMatchTemplate(src: any, templ: any, config: any): { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } {
+    let bestRes: { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false };
     const scales = config.scales || [1.0];
     const method = getMatchingMethod(config.matchingMethod || 'TM_CCOEFF_NORMED');
     const threshold = config.threshold || 0.8;
@@ -140,12 +140,12 @@ function matchWithROI(src: any, templ: any, roi: any, config: any): any {
     // 清理
     roiMat.delete();
 
-    // 调整坐标到原图
+    // 调整坐标到原图并标记使用了ROI
     if (result.score > 0) {
         result.x += roi.x;
         result.y += roi.y;
-        result.usedROI = true;
     }
+    result.usedROI = true;
 
     return result;
 }
