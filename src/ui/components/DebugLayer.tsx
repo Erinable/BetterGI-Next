@@ -1,5 +1,5 @@
 import { h } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { logger } from '../../core/logging/logger';
 import { performanceMonitor } from '../../core/performance/monitor';
@@ -7,7 +7,7 @@ import { performanceMonitor } from '../../core/performance/monitor';
 interface DebugRect {
     x: number; y: number; w: number; h: number;
     score: number; label: string; ts: number;
-    cost?: number; // 新增耗时字段
+    cost?: number;
 }
 
 export function DebugLayer() {
@@ -20,96 +20,75 @@ export function DebugLayer() {
         averageMatchTime: 0
     });
 
-    // 初始化性能监控
+    // [修复1] 使用 useRef 存储 FPS 计算状态，避免每次渲染重置
+    const fpsRef = useRef({
+        frameCount: 0,
+        lastUpdate: performance.now(),
+        currentFps: 0
+    });
+
+    // [修复2] 使用 useRef 存储回调函数引用，确保 off 能正确匹配
+    const callbacksRef = useRef<{
+        onDraw: ((item: any) => void) | null;
+        onClear: (() => void) | null;
+    }>({ onDraw: null, onClear: null });
+
+    // FPS 计算 - 使用 ref 持久化状态
+    const calculateFPS = (): number => {
+        const ref = fpsRef.current;
+        ref.frameCount++;
+        const now = performance.now();
+        if (now - ref.lastUpdate >= 1000) {
+            ref.currentFps = ref.frameCount;
+            ref.frameCount = 0;
+            ref.lastUpdate = now;
+        }
+        return ref.currentFps;
+    };
+
+    // 性能监控定时更新
     useEffect(() => {
-        const initializeMonitoring = () => {
+        const updateStats = () => {
             try {
-                // 开始性能监控
-                const endMeasurement = performanceMonitor.startMeasurement('debug_layer_render', 'ui');
+                const metrics = performanceMonitor.getMetrics();
+                const recentStats = performanceMonitor.getRecentStats(1);
 
-                // 更新性能统计
-                const updateStats = () => {
-                    try {
-                        const metrics = performanceMonitor.getMetrics();
-                        const recentStats = performanceMonitor.getRecentStats(1);
-
-                        setPerformanceStats({
-                            fps: calculateFPS(),
-                            cacheHitRate: metrics.cacheHitRate,
-                            memoryUsage: metrics.memoryUsage,
-                            averageMatchTime: recentStats.averageMatchTime || 0
-                        });
-
-                        endMeasurement();
-                    } catch (error) {
-                        logger.error('ui', 'Failed to update performance stats', { error });
-                    }
-                };
-
-                const interval = setInterval(updateStats, 500); // 每500ms更新一次
-                return () => clearInterval(interval);
+                setPerformanceStats({
+                    fps: calculateFPS(),
+                    cacheHitRate: metrics.cacheHitRate,
+                    memoryUsage: metrics.memoryUsage,
+                    averageMatchTime: recentStats.averageMatchTime || 0
+                });
             } catch (error) {
-                logger.error('ui', 'Failed to initialize debug layer monitoring', { error });
+                logger.error('ui', 'Failed to update performance stats', { error });
             }
         };
 
-        const cleanup = initializeMonitoring();
-
-        return () => {
-            if (cleanup) cleanup();
-        };
+        const intervalId = setInterval(updateStats, 500);
+        return () => clearInterval(intervalId);
     }, []);
 
-    // FPS计算
-    let frameCount = 0;
-    let lastFpsUpdate = performance.now();
-    const calculateFPS = (): number => {
-        frameCount++;
-        const now = performance.now();
-        if (now - lastFpsUpdate >= 1000) {
-            const fps = frameCount;
-            frameCount = 0;
-            lastFpsUpdate = now;
-            return fps;
-        }
-        return performanceStats.fps;
-    };
-
+    // EventBus 监听
     useEffect(() => {
+        // [修复2] 创建稳定的回调函数引用
         const onDraw = (item: any) => {
             const now = performance.now();
             const items = Array.isArray(item) ? item : [item];
             const newRects = items.map((r: any) => ({ ...r, ts: now }));
 
-            // 记录匹配性能
             if (newRects.length > 0) {
                 const best = newRects.sort((a, b) => b.score - a.score)[0];
-
-                // 记录匹配数据到性能监控系统
-                performanceMonitor.recordMatch({
-                    duration: best.cost || 0,
-                    score: best.score,
-                    scale: 1.0,
-                    useROI: false,
-                    templateSize: { width: best.w, height: best.h },
-                    usedAdaptiveScaling: false,
-                    operation: 'debug_draw',
-                    category: 'ui'
-                });
-
                 setLatestInfo({ score: best.score, cost: best.cost || 0 });
 
                 logger.debug('ui', 'Match result displayed', {
                     score: best.score,
                     cost: best.cost,
-                    position: { x: best.x, y: best.y },
-                    size: { width: best.w, height: best.h }
+                    position: { x: best.x, y: best.y }
                 });
             }
 
-            // 更新显示框
             setRects(prev => {
-                const valid = prev.filter(r => now - r.ts < 500); // 0.5秒后消失
+                const valid = prev.filter(r => now - r.ts < 500);
                 return [...valid, ...newRects];
             });
         };
@@ -120,16 +99,24 @@ export function DebugLayer() {
             logger.debug('ui', 'Debug layer cleared');
         };
 
+        // 保存引用以便清理
+        callbacksRef.current.onDraw = onDraw;
+        callbacksRef.current.onClear = onClear;
+
         bus.on(EVENTS.DEBUG_DRAW, onDraw);
         bus.on(EVENTS.DEBUG_CLEAR, onClear);
 
         return () => {
-            bus.off(EVENTS.DEBUG_DRAW, onDraw);
-            bus.off(EVENTS.DEBUG_CLEAR, onClear);
+            if (callbacksRef.current.onDraw) {
+                bus.off(EVENTS.DEBUG_DRAW, callbacksRef.current.onDraw);
+            }
+            if (callbacksRef.current.onClear) {
+                bus.off(EVENTS.DEBUG_CLEAR, callbacksRef.current.onClear);
+            }
         };
     }, []);
 
-    // 自动隐藏 HUD (如果没有新数据)
+    // 自动隐藏 HUD
     useEffect(() => {
         if (!latestInfo) return;
         const timer = setTimeout(() => setLatestInfo(null), 1000);
@@ -141,7 +128,7 @@ export function DebugLayer() {
             position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
             pointerEvents: 'none', zIndex: 9990, overflow: 'hidden'
         }}>
-            {/* 增强的顶部 HUD 信息栏 */}
+            {/* 顶部 HUD 信息栏 */}
             {latestInfo && (
                 <div style={{
                     position: 'absolute',
@@ -165,12 +152,6 @@ export function DebugLayer() {
                     </span>
                     <span style={{ color: performanceStats.fps > 30 ? '#0f0' : '#ff6600' }}>
                         📊 FPS: {performanceStats.fps}
-                    </span>
-                    <span style={{
-                        color: performanceStats.memoryUsage > 100 * 1024 * 1024 ? '#ff6600' : '#0f0',
-                        fontSize: '11px'
-                    }}>
-                        🧠 内存: {(performanceStats.memoryUsage / 1024 / 1024).toFixed(1)}MB
                     </span>
                 </div>
             )}
@@ -202,7 +183,6 @@ export function DebugLayer() {
                     transform: 'translate(-50%, -50%)',
                     zIndex: 9991
                 }}>
-                    {/* 框上的标签 (可选，保留以便定位) */}
                     <span style={{
                         position: 'absolute', top: -18, left: 0,
                         background: 'rgba(0,0,0,0.7)', color: 'white',

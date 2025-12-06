@@ -355,6 +355,9 @@ export class Engine {
 	startPreviewTask(template: ImageData) {
         this.stopTask();
 
+        // [修复] 使用闭包变量存储 timeoutId，确保 stop 时能清理
+        let loopTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
         const previewTask = {
             name: 'Preview',
             running: true,
@@ -377,7 +380,6 @@ export class Engine {
                         });
 
                         // [关键修复] Worker 不返回宽高，我们需要手动补全
-                        // 从传入的 template (ImageData) 中获取宽高
                         const res = rawRes ? {
                             ...rawRes,
                             w: template.width,
@@ -396,12 +398,6 @@ export class Engine {
                                 const screenW = res.w * info.scaleX;
                                 const screenH = res.h * info.scaleY;
 
-                                // 这里的 scaleX/Y 已经是最终缩放了 (Worker 内部处理了 downsample 和 scales 的反算)
-                                // 但有一个细节：多尺度匹配(scales)返回的 res.w/h 是原始模板大小
-                                // 如果匹配到了 1.2倍 的物体，视觉上框应该变大。
-                                // 为了简单，目前画的框是固定大小的。
-                                // 如果想要框跟随缩放变化，可以使用 res.bestScale (如果 Worker 返回了的话)
-                                // Worker v31 代码里确实返回了 bestScale，所以我们可以利用它：
                                 const matchScale = (res as any).bestScale || 1.0;
                                 const finalW = screenW * matchScale;
                                 const finalH = screenH * matchScale;
@@ -417,11 +413,23 @@ export class Engine {
                             }
                         }
                     }
-                    if (previewTask.running) setTimeout(loop, 100);
+                    // [修复] 保存 timeoutId 以便清理
+                    if (previewTask.running) {
+                        loopTimeoutId = setTimeout(loop, 100);
+                    }
                 };
                 loop();
             },
-            stop: () => { previewTask.running = false; }
+            stop: () => {
+                previewTask.running = false;
+                // [修复] 清理待执行的 timeout
+                if (loopTimeoutId !== null) {
+                    clearTimeout(loopTimeoutId);
+                    loopTimeoutId = null;
+                }
+                // 清空调试层
+                bus.emit(EVENTS.DEBUG_CLEAR);
+            }
         };
 
         this.activeTask = previewTask as any;
