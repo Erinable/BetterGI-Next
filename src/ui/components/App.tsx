@@ -50,8 +50,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi }: AppP
     };
     const [scaleMode, setScaleMode] = useState(getScaleMode(configManager.get('scales')));
 
-    // 配置管理状态
-    const [pendingConfig, setPendingConfig] = useState<any>({});
+    // 配置管理状态 - 使用 Partial<AppConfig> 避免 implicit any
+    const [pendingConfig, setPendingConfig] = useState<Partial<Record<string, any>>>({});
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
     useEffect(() => {
