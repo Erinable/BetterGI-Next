@@ -9,10 +9,10 @@ interface FrameCache {
 }
 
 export class VisionSystem {
-    private worker: Worker;
-    private video: HTMLVideoElement | null = null;
-    private canvas = document.createElement('canvas');
-    private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
+    private _worker: Worker;
+    private _video: HTMLVideoElement | null = null;
+    private _canvas = document.createElement('canvas');
+    private _ctx = this._canvas.getContext('2d', { willReadFrequently: true })!;
     private callbacks = new Map<number, Function>();
     private msgId = 0;
 
@@ -23,14 +23,33 @@ export class VisionSystem {
     private lastFrameHash = '';
     private performanceEnabled = true;
 
+    // 定时器引用，用于销毁时清理
+    private scanVideoIntervalId: number | null = null;
+    private cleanCacheIntervalId: number | null = null;
+
+    // 公开只读访问器
+    get worker(): Worker { return this._worker; }
+    get video(): HTMLVideoElement | null { return this._video; }
+    get canvas(): HTMLCanvasElement { return this._canvas; }
+    get ctx(): CanvasRenderingContext2D { return this._ctx; }
+
     constructor() {
         const blob = new Blob([__WORKER_CODE__], { type: 'application/javascript' });
-        this.worker = new Worker(URL.createObjectURL(blob));
+        this._worker = new Worker(URL.createObjectURL(blob));
 
         // 发送初始化消息给Worker
-        this.worker.postMessage({ type: 'INIT' });
+        this._worker.postMessage({ type: 'INIT' });
 
-        this.worker.onmessage = (e) => {
+        // Worker 错误处理
+        this._worker.onerror = (e: ErrorEvent) => {
+            logger.error('vision', 'Worker error', {
+                message: e.message,
+                filename: e.filename,
+                lineno: e.lineno
+            });
+        };
+
+        this._worker.onmessage = (e) => {
             const { id, type, result } = e.data;
             if (type === 'INIT_DONE') {
                 logger.info('vision', 'Worker ready');
@@ -67,18 +86,18 @@ export class VisionSystem {
             }
         };
 
-        setInterval(() => this.scanVideo(), 1000);
+        this.scanVideoIntervalId = window.setInterval(() => this.scanVideo(), 1000);
 
         // 定期清理缓存
-        setInterval(() => this.cleanFrameCache(), 5000);
+        this.cleanCacheIntervalId = window.setInterval(() => this.cleanFrameCache(), 5000);
     }
 
     private scanVideo() {
-        if (this.video?.isConnected && this.video.videoWidth > 0) return;
-        
+        if (this._video?.isConnected && this._video.videoWidth > 0) return;
+
         const v = document.querySelector('video');
         if (v && v.videoWidth > 0) {
-            this.video = v;
+            this._video = v;
             logger.info('vision', `Video locked: ${v.videoWidth}x${v.videoHeight}`);
         }
     }
@@ -91,21 +110,21 @@ export class VisionSystem {
         const video = this.video;
         // 尝试寻找 Better-xCloud 的渲染 Canvas (仅用于获取位置和尺寸)
         const gameCanvas = document.querySelector('#game-stream canvas') || document.querySelector('canvas');
-        
+
         // 1. 确定数据源：永远优先使用 Video，因为 Canvas 可能是 WebGL 且无法读取
         if (!video || video.videoWidth === 0) return null;
-        
+
         // 2. 确定显示区域 (Visual Rect)
         // 优先用 Canvas 的 rect，因为 Video 可能被隐藏了 (width=0 或 opacity=0)
         let visualRect = video.getBoundingClientRect();
-        
+
         if (gameCanvas && gameCanvas.getBoundingClientRect().width > 0) {
             // 如果 Canvas 存在且可见，它就是用户看到的画面
             visualRect = gameCanvas.getBoundingClientRect();
         } else if (visualRect.width === 0) {
             // 兜底：如果都不可见，假设全屏
-            visualRect = { 
-                left: 0, top: 0, 
+            visualRect = {
+                left: 0, top: 0,
                 width: window.innerWidth, height: window.innerHeight,
                 x: 0, y: 0, bottom: 0, right: 0, toJSON: ()=>{}
             };
@@ -230,7 +249,7 @@ export class VisionSystem {
         try {
             // 从 Video (source) 中截取，确保能拿到像素
             ctx.drawImage(source, realX, realY, realW, realH, 0, 0, realW, realH);
-            
+
             // 验证是否截取到了黑屏 (可选)
             // const check = ctx.getImageData(0, 0, realW, realH);
             // ... 检查 check.data ...
@@ -377,4 +396,32 @@ export class VisionSystem {
         // ROI配置通过match方法的options参数传递
         bus.emit(EVENTS.CONFIG_UPDATE, { roiRegions: regions });
     }
+
+    /**
+     * 销毁视觉系统，清理所有资源
+     */
+    destroy() {
+        // 清理定时器
+        if (this.scanVideoIntervalId !== null) {
+            clearInterval(this.scanVideoIntervalId);
+            this.scanVideoIntervalId = null;
+        }
+        if (this.cleanCacheIntervalId !== null) {
+            clearInterval(this.cleanCacheIntervalId);
+            this.cleanCacheIntervalId = null;
+        }
+
+        // 终止 Worker
+        this._worker.terminate();
+
+        // 清理缓存
+        this.frameCache.clear();
+        this.callbacks.clear();
+
+        // 清理视频引用
+        this._video = null;
+
+        logger.info('vision', 'VisionSystem destroyed');
+    }
 }
+

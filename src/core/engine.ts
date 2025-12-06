@@ -83,12 +83,13 @@ export class Engine {
                 const inputDetails = {
                     channelConnected: !!this.input.channel,
                     channelType: this.input.channel?.constructor?.name || 'Unknown',
-                    supportedKeys: Object.keys(this.input.state).filter(key => this.input.state[key] !== undefined)
+                    supportedKeys: Object.keys(this.input.state)
                 };
                 logger.info('engine', '📊 输入系统详细信息', inputDetails);
 
-            } catch (inputError) {
-                logger.error('engine', '❌ 输入系统初始化失败', { error: inputError.message });
+            } catch (inputError: unknown) {
+                const errorMessage = inputError instanceof Error ? inputError.message : String(inputError);
+                logger.error('engine', '❌ 输入系统初始化失败', { error: errorMessage });
                 logger.warn('engine', '⚠️ 继续初始化其他系统，但输入功能将不可用');
                 // 不抛出错误，允许其他系统继续初始化
             }
@@ -121,13 +122,8 @@ export class Engine {
             };
             logger.info('engine', '📊 算法系统状态', algoStatus);
 
-            // 监听 UI 事件
-            logger.info('engine', '🔗 设置事件监听器...');
-            bus.on(EVENTS.TASK_START, (name: string) => this.startTask(name));
-            bus.on(EVENTS.TASK_STOP, () => this.stopTask());
-            bus.on(EVENTS.CONFIG_UPDATE, (cfg: any) => this.updateConfig(cfg));
-            bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
-            logger.info('engine', '✅ 事件监听器设置完成');
+            // 事件监听器已在 constructor 的 bindEvents() 中设置
+            logger.info('engine', '✅ 事件监听器已就绪 (通过 bindEvents)');
 
             // 模块就绪状态总结
             const moduleStatus = {

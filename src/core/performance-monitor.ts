@@ -65,8 +65,12 @@ export class PerformanceMonitor {
         };
     }
 
-    // 记录匹配结果
-    private recordMatch(duration: number, result: any) {
+    /**
+     * 记录匹配结果
+     * @param duration 匹配耗时 (ms)
+     * @param result 匹配结果对象
+     */
+    recordMatch(duration: number, result: any) {
         this.metrics.matchCount++;
         this.metrics.totalMatchTime += duration;
         this.metrics.averageMatchTime = this.metrics.totalMatchTime / this.metrics.matchCount;

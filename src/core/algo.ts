@@ -9,15 +9,20 @@ interface Asset {
 }
 
 export class AlgoSystem {
-    private vision: VisionSystem;
+    private _vision: VisionSystem;
     private assets: Map<string, Asset> = new Map();
 
+    // 公开只读访问器
+    get vision(): VisionSystem { return this._vision; }
+
     constructor(vision: VisionSystem) {
-        this.vision = vision;
+        this._vision = vision;
     }
 
     /**
      * 注册图片素材 (Base64 -> ImageData)
+     * @param name 素材名称
+     * @param base64 Base64 编码的图片数据
      */
     async register(name: string, base64: string): Promise<void> {
         return new Promise((resolve, reject) => {
@@ -27,15 +32,18 @@ export class AlgoSystem {
                 canvas.width = img.width;
                 canvas.height = img.height;
                 const ctx = canvas.getContext('2d');
-                if (!ctx) return reject('Canvas context error');
-                
+                if (!ctx) {
+                    reject(new Error(`Canvas context error while registering asset: ${name}`));
+                    return;
+                }
+
                 ctx.drawImage(img, 0, 0);
                 const template = ctx.getImageData(0, 0, img.width, img.height);
-                
+
                 this.assets.set(name, { name, template });
                 resolve();
             };
-            img.onerror = reject;
+            img.onerror = () => reject(new Error(`Failed to load image asset: ${name}`));
             img.src = base64;
         });
     }
@@ -54,8 +62,8 @@ export class AlgoSystem {
         }
 
         // 调用 VisionSystem (最终传给 Worker) 进行匹配
-        const result = await this.vision.match(screen, asset.template, options);
-        
+        const result = await this._vision.match(screen, asset.template, options);
+
         // 阈值判断
         const threshold = options.threshold || 0.8;
         if (result && result.score >= threshold) {
@@ -65,7 +73,7 @@ export class AlgoSystem {
                 h: asset.template.height
             };
         }
-        
+
         return null;
     }
 }
