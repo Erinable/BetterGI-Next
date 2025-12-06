@@ -208,14 +208,25 @@ self.onmessage = (e: MessageEvent) => {
                 }
             }
 
-            // 2. ROI或全屏匹配
+            // 2. [新增] 灰度转换 - 减少75%数据量，加速匹配
+            const useGrayscale = config.grayscale !== false;
+            let srcGray: any = null;
+            let templGray: any = null;
+            if (useGrayscale) {
+                srcGray = toGrayscale(src);
+                templGray = toGrayscale(templ);
+            }
+            const matchSrc = useGrayscale ? srcGray : src;
+            const matchTempl = useGrayscale ? templGray : templ;
+
+            // 3. ROI或全屏匹配
             let bestRes: any;
             if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
                 // ROI匹配：尝试所有ROI区域
                 bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
 
                 for (const roi of config.roi.regions) {
-                    const roiResult = matchWithROI(src, templ, roi, config);
+                    const roiResult = matchWithROI(matchSrc, matchTempl, roi, config);
                     if (roiResult.score > bestRes.score) {
                         bestRes = roiResult;
                     }
@@ -227,9 +238,13 @@ self.onmessage = (e: MessageEvent) => {
                 }
             } else {
                 // 全屏匹配
-                bestRes = optimizedMatchTemplate(src, templ, config);
+                bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
                 bestRes.usedROI = false;
             }
+
+            // 清理灰度图
+            if (srcGray) srcGray.delete();
+            if (templGray) templGray.delete();
 
             src.delete();
             if (!cacheHit) templ.delete();
