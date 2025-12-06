@@ -421,6 +421,19 @@ export class Engine {
                                     label: 'Preview'
                                 });
                             }
+                        } else if (res && this.config.debug) {
+                            // 即使分数低于阈值也显示 HUD 反馈 (灰色表示低置信度)
+                            const info = this.vision.getDisplayInfo();
+                            if (info) {
+                                bus.emit(EVENTS.DEBUG_DRAW, {
+                                    x: info.offsetX + (res.x * info.scaleX),
+                                    y: info.offsetY + (res.y * info.scaleY),
+                                    w: 0, h: 0, // 不显示框，只更新 HUD
+                                    score: res.score,
+                                    cost: cost,
+                                    label: 'Preview (低置信度)'
+                                });
+                            }
                         }
                     }
                     // [修复] 保存 timeoutId 以便清理
