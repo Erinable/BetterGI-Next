@@ -626,6 +626,22 @@ export class PerformanceMonitor {
   recordMatchSimple(duration: number, result: any): void {
     if (this.isPaused) return;
 
+    // 添加到 matchRecords 以支持 getRecentStats
+    this.matchRecords.push({
+      timestamp: Date.now(),
+      duration,
+      score: result?.score || 0,
+      scale: result?.bestScale || 1.0,
+      useROI: result?.usedROI || false,
+      templateSize: { width: result?.templateWidth || 0, height: result?.templateHeight || 0 },
+      usedAdaptiveScaling: result?.adaptiveScaling || false
+    });
+
+    // 限制记录数量
+    if (this.matchRecords.length > this.config.maxRecords.matches) {
+      this.matchRecords = this.matchRecords.slice(-this.config.maxRecords.matches);
+    }
+
     this.metrics.matchCount++;
     this.metrics.totalMatchTime += duration;
     this.metrics.averageMatchTime = this.metrics.totalMatchTime / this.metrics.matchCount;

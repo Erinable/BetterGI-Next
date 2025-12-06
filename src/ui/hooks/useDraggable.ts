@@ -61,8 +61,9 @@ export function useDraggable(options: DragOptions = {}) {
             const newY = e.clientY - offset.current.y;
 
             // 检查是否接近吸附区域
-            const nearDock = checkNearDock(newX);
-            setIsNearDock(nearDock);
+            if (options.canDock) {
+                setIsNearDock(newX < dockThreshold);
+            }
 
             setPos({ x: newX, y: newY });
         };
