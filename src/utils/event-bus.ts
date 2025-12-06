@@ -58,6 +58,7 @@ export const EVENTS = {
     CROP_REQUEST: 'crop:request',
     TASK_LIST_UPDATE: 'TASK_LIST_UPDATE',
     ENGINE_STATE_CHANGE: 'engine:state_change', // [新增] 引擎运行状态变更
+    ENGINE_QUERY_STATE: 'engine:query_state',   // [新增] UI 主动查询引擎状态
     // 性能相关事件
     PERFORMANCE_WORKER_STATS: 'performance:worker_stats',
     PERFORMANCE_METRICS_UPDATE: 'performance:metrics_update',

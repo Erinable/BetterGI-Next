@@ -55,6 +55,14 @@ export class Engine {
 
         // [关键] 截图请求现在无论 Input 是否就绪，都能被处理
         bus.on(EVENTS.CROP_REQUEST, (rect: any) => this.handleCrop(rect));
+
+        // [新增] 响应 UI 的状态查询
+        bus.on(EVENTS.ENGINE_QUERY_STATE, () => {
+            bus.emit(EVENTS.ENGINE_STATE_CHANGE, {
+                running: !!this.activeTask && this.activeTask.running,
+                taskName: this.activeTask ? this.activeTask.name : undefined
+            });
+        });
     }
     private async init() {
         const endMeasurement = performanceMonitor.startMeasurement('engine_init', 'system');

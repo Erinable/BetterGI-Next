@@ -80,6 +80,11 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
         };
     }, []);
 
+    // [新增] 组件挂载时，主动查询引擎状态
+    useEffect(() => {
+        bus.emit(EVENTS.ENGINE_QUERY_STATE);
+    }, []);
+
     const toggle = () => {
         if (running) {
             bus.emit(EVENTS.TASK_STOP);
