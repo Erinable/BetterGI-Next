@@ -328,8 +328,35 @@ self.onmessage = (e: MessageEvent) => {
                     });
                 }
 
-                // 匹配
-                const matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                // 匹配 - 支持 ROI
+                let matchResult: any;
+                if (config.roi && config.roi.enabled && config.roi.regions?.length > 0) {
+                    // ROI 匹配：在所有 ROI 区域中查找最佳匹配
+                    matchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
+                    for (const roi of config.roi.regions) {
+                        // ROI 坐标需要根据降采样调整
+                        const scaledRoi = {
+                            x: Math.floor(roi.x * downsampleFactor),
+                            y: Math.floor(roi.y * downsampleFactor),
+                            w: Math.floor(roi.w * downsampleFactor),
+                            h: Math.floor(roi.h * downsampleFactor)
+                        };
+                        // 确保 ROI 在图像范围内
+                        if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
+                            scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
+                            scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
+                            scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
+                            const roiResult = matchWithROI(matchSrc, templ, scaledRoi, config);
+                            if (roiResult.score > matchResult.score) {
+                                matchResult = roiResult;
+                            }
+                        }
+                    }
+                } else {
+                    // 全屏匹配
+                    matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                }
+
                 const templateDuration = performance.now() - templateStartTime;
 
                 const factor = 1.0 / downsampleFactor;
@@ -340,7 +367,8 @@ self.onmessage = (e: MessageEvent) => {
                     y: matchResult.y * factor,
                     matched: matchResult.score >= threshold,
                     duration: Math.round(templateDuration * 100) / 100,
-                    cacheHit
+                    cacheHit,
+                    usedROI: matchResult.usedROI || false
                 });
 
                 if (!cacheHit) {

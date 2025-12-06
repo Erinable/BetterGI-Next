@@ -87,7 +87,13 @@ export class AlgoSystem {
     async findBatchAsync(
         screen: ImageData,
         names: string[],
-        options: { threshold?: number; downsample?: number; earlyExit?: boolean } = {}
+        options: {
+            threshold?: number;
+            downsample?: number;
+            earlyExit?: boolean;
+            useROI?: boolean;
+            roiRegions?: Array<{ x: number, y: number, w: number, h: number, name?: string }>;
+        } = {}
     ): Promise<Array<{
         name: string;
         score: number;
@@ -119,7 +125,9 @@ export class AlgoSystem {
         const result = await this._vision.batchMatch(screen, templates, {
             threshold: options.threshold || 0.8,
             downsample: options.downsample || 0.33,
-            earlyExit: options.earlyExit || false
+            earlyExit: options.earlyExit || false,
+            useROI: options.useROI,
+            roiRegions: options.roiRegions
         });
 
         // 转换结果格式

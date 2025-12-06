@@ -423,6 +423,8 @@ export class VisionSystem {
             downsample?: number;
             grayscale?: boolean;
             earlyExit?: boolean;
+            useROI?: boolean;
+            roiRegions?: Array<{ x: number, y: number, w: number, h: number, name?: string }>;
         } = {}
     ): Promise<{
         results: Array<{
@@ -432,6 +434,7 @@ export class VisionSystem {
             y: number;
             matched: boolean;
             duration: number;
+            usedROI?: boolean;
         }>;
         totalDuration: number;
         matchedCount: number;
@@ -476,7 +479,11 @@ export class VisionSystem {
                         threshold: options.threshold || 0.8,
                         downsample: options.downsample || 0.33,
                         grayscale: options.grayscale !== false,
-                        earlyExit: options.earlyExit || false
+                        earlyExit: options.earlyExit || false,
+                        roi: options.useROI ? {
+                            enabled: true,
+                            regions: options.roiRegions || []
+                        } : { enabled: false, regions: [] }
                     }
                 }
             }, transfer);
