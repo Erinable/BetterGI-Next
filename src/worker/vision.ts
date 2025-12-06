@@ -328,20 +328,38 @@ self.onmessage = (e: MessageEvent) => {
                     });
                 }
 
-                // 匹配 - 支持 ROI
+                // 匹配 - 优先使用模板级 ROI，其次全局 ROI，最后全屏
                 let matchResult: any;
-                if (config.roi && config.roi.enabled && config.roi.regions?.length > 0) {
-                    // ROI 匹配：在所有 ROI 区域中查找最佳匹配
+
+                // 1. 检查模板级 ROI (template.roi)
+                if (template.roi && template.roi.x !== undefined) {
+                    const scaledRoi = {
+                        x: Math.floor(template.roi.x * downsampleFactor),
+                        y: Math.floor(template.roi.y * downsampleFactor),
+                        w: Math.floor(template.roi.w * downsampleFactor),
+                        h: Math.floor(template.roi.h * downsampleFactor)
+                    };
+                    // 确保 ROI 在图像范围内且大于模板
+                    if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
+                        scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
+                        scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
+                        scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
+                        matchResult = matchWithROI(matchSrc, templ, scaledRoi, config);
+                    } else {
+                        // ROI 无效，回退到全屏
+                        matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                    }
+                }
+                // 2. 检查全局 ROI (config.roi)
+                else if (config.roi && config.roi.enabled && config.roi.regions?.length > 0) {
                     matchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
                     for (const roi of config.roi.regions) {
-                        // ROI 坐标需要根据降采样调整
                         const scaledRoi = {
                             x: Math.floor(roi.x * downsampleFactor),
                             y: Math.floor(roi.y * downsampleFactor),
                             w: Math.floor(roi.w * downsampleFactor),
                             h: Math.floor(roi.h * downsampleFactor)
                         };
-                        // 确保 ROI 在图像范围内
                         if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
                             scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
                             scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
@@ -352,8 +370,9 @@ self.onmessage = (e: MessageEvent) => {
                             }
                         }
                     }
-                } else {
-                    // 全屏匹配
+                }
+                // 3. 全屏匹配
+                else {
                     matchResult = optimizedMatchTemplate(matchSrc, templ, config);
                 }
 

@@ -150,4 +150,83 @@ export class AlgoSystem {
             };
         });
     }
+
+    /**
+     * 批量异步查找 - 支持模板级 ROI (每个模板指定自己的搜索区域)
+     * @param screen 当前屏幕截图
+     * @param targets 目标数组 [{name, roi?: {x,y,w,h}}]
+     * @param options 匹配参数
+     * @returns 匹配结果数组
+     */
+    async findBatchWithROIAsync(
+        screen: ImageData,
+        targets: Array<{
+            name: string;
+            roi?: { x: number, y: number, w: number, h: number };
+        }>,
+        options: { threshold?: number; downsample?: number; earlyExit?: boolean } = {}
+    ): Promise<Array<{
+        name: string;
+        score: number;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        matched: boolean;
+        usedROI: boolean;
+    } | null>> {
+        // 收集有效的模板
+        const templates: Array<{
+            name: string;
+            data: ImageData;
+            roi?: { x: number, y: number, w: number, h: number };
+        }> = [];
+        const assetMap = new Map<string, { width: number; height: number }>();
+
+        for (const target of targets) {
+            const asset = this.assets.get(target.name);
+            if (asset) {
+                templates.push({
+                    name: target.name,
+                    data: asset.template,
+                    roi: target.roi  // 模板级 ROI
+                });
+                assetMap.set(target.name, { width: asset.template.width, height: asset.template.height });
+            } else {
+                logger.warn('algo', `Asset not found: ${target.name}`);
+            }
+        }
+
+        if (templates.length === 0) {
+            return targets.map(() => null);
+        }
+
+        // 调用批量匹配
+        const result = await this._vision.batchMatch(screen, templates, {
+            threshold: options.threshold || 0.8,
+            downsample: options.downsample || 0.33,
+            earlyExit: options.earlyExit || false
+        });
+
+        // 转换结果格式
+        const resultMap = new Map(result.results.map(r => [r.name, r]));
+
+        return targets.map(target => {
+            const matchResult = resultMap.get(target.name);
+            if (!matchResult || !matchResult.matched) {
+                return null;
+            }
+            const asset = assetMap.get(target.name);
+            return {
+                name: target.name,
+                score: matchResult.score,
+                x: matchResult.x,
+                y: matchResult.y,
+                w: asset?.width || 0,
+                h: asset?.height || 0,
+                matched: true,
+                usedROI: matchResult.usedROI || false
+            };
+        });
+    }
 }

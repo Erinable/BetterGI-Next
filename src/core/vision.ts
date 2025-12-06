@@ -411,20 +411,24 @@ export class VisionSystem {
     /**
      * 批量匹配 - 多个模板共用一个源图像，大幅减少开销
      * @param screen 屏幕截图
-     * @param templates 模板数组 [{name, data: ImageData}]
+     * @param templates 模板数组 [{name, data: ImageData, roi?: {x,y,w,h}}] - 每个模板可指定自己的ROI
      * @param options 匹配配置
      * @returns 匹配结果数组
      */
     batchMatch(
         screen: ImageData,
-        templates: Array<{ name: string, data: ImageData }>,
+        templates: Array<{
+            name: string;
+            data: ImageData;
+            roi?: { x: number, y: number, w: number, h: number };  // 模板级 ROI
+        }>,
         options: {
             threshold?: number;
             downsample?: number;
             grayscale?: boolean;
             earlyExit?: boolean;
-            useROI?: boolean;
-            roiRegions?: Array<{ x: number, y: number, w: number, h: number, name?: string }>;
+            useROI?: boolean;  // 全局 ROI 开关
+            roiRegions?: Array<{ x: number, y: number, w: number, h: number, name?: string }>;  // 全局 ROI
         } = {}
     ): Promise<{
         results: Array<{
@@ -456,14 +460,15 @@ export class VisionSystem {
             const screenDataClone = new Uint8ClampedArray(screen.data);
             const screenClone = new ImageData(screenDataClone, screen.width, screen.height);
 
-            // 模板副本
+            // 模板副本 - 包含模板级 ROI
             const templatesClone = templates.map(t => {
                 const dataClone = new Uint8ClampedArray(t.data.data);
                 return {
                     name: t.name,
                     data: new ImageData(dataClone, t.data.width, t.data.height),
                     width: t.data.width,
-                    height: t.data.height
+                    height: t.data.height,
+                    roi: t.roi  // 模板级 ROI (可选)
                 };
             });
 
