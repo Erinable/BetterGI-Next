@@ -10,7 +10,11 @@ interface DebugRect {
     cost?: number;
 }
 
-export function DebugLayer() {
+interface DebugLayerProps {
+    visible?: boolean; // 控制整体可见性
+}
+
+export function DebugLayer({ visible = true }: DebugLayerProps) {
     const [rects, setRects] = useState<DebugRect[]>([]);
     const [latestInfo, setLatestInfo] = useState<{ score: number, cost: number } | null>(null);
     const [performanceStats, setPerformanceStats] = useState({
@@ -122,6 +126,9 @@ export function DebugLayer() {
         const timer = setTimeout(() => setLatestInfo(null), 1000);
         return () => clearTimeout(timer);
     }, [latestInfo]);
+
+    // 不可见时隐藏整个组件
+    if (!visible) return null;
 
     return (
         <div style={{

@@ -22,6 +22,9 @@ function Root() {
     const [isAddingRoi, setIsAddingRoi] = useState(false);
     const [pendingRoiRect, setPendingRoiRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
 
+    // 新增: 预览可见性状态
+    const [showDebugLayer, setShowDebugLayer] = useState(true);
+
     const handleCropStart = () => {
         bus.emit(EVENTS.TASK_STOP);
         setShowPanel(false);
@@ -32,6 +35,11 @@ function Root() {
         setIsCropping(false);
         setShowPanel(true);
         bus.emit(EVENTS.CROP_REQUEST, rect);
+    };
+
+    // 新增: 预览切换
+    const handleTogglePreview = () => {
+        setShowDebugLayer(prev => !prev);
     };
 
     // 新增: ROI 添加流程
@@ -62,8 +70,8 @@ function Root() {
 
     return (
         <div id="bgi-ui-root">
-            {/* 调试层常驻 */}
-            <DebugLayer />
+            {/* 调试层 - 受 showDebugLayer 控制 */}
+            <DebugLayer visible={showDebugLayer} />
 
             {/* 截图层 */}
             {isCropping && (
@@ -96,6 +104,8 @@ function Root() {
                         onClose={() => setShowPanel(false)}
                         onCrop={handleCropStart}
                         onAddRoi={handleAddRoiStart}
+                        showPreview={showDebugLayer}
+                        onTogglePreview={handleTogglePreview}
                     />
                 )
             )}

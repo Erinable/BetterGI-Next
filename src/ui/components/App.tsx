@@ -10,10 +10,12 @@ interface AppProps {
     onPosChange: (pos: { x: number; y: number }) => void;
     onClose: () => void;
     onCrop: () => void;
-    onAddRoi?: () => void;  // 新增: 添加 ROI 区域回调
+    onAddRoi?: () => void;
+    showPreview?: boolean;         // 新增: 预览可见性
+    onTogglePreview?: () => void;  // 新增: 切换预览
 }
 
-export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi }: AppProps) {
+export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPreview = true, onTogglePreview }: AppProps) {
     const { pos, startDrag } = useDraggable({
         initialPos,
         onDragEnd: onPosChange,
@@ -30,7 +32,6 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi }: AppP
     // 配置项状态 - 从配置管理器读取保存的值
     const [threshold, setThreshold] = useState(configManager.get('threshold'));
     const [downsample, setDownsample] = useState(configManager.get('downsample'));
-    const [isDebug, setIsDebug] = useState(configManager.get('debugMode'));
 
     // 性能相关状态 - 从配置管理器读取保存的值
     const [performanceStats, setPerformanceStats] = useState<any>(null);
@@ -113,12 +114,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi }: AppP
         setHasUnsavedChanges(true);
     };
 
-    const handleDebugChange = (e: any) => {
-        const val = e.target.checked;
-        setIsDebug(val);
-        setPendingConfig(prev => ({ ...prev, debugMode: val }));
-        setHasUnsavedChanges(true);
-    };
+
 
     const handleAdaptiveScalingChange = (e: any) => {
         const val = e.target.checked;
@@ -371,20 +367,14 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi }: AppP
                     </div>
                 )}
 
-                {/* Debug 开关 */}
-                <div class={`checkbox-row ${pendingConfig.debugMode !== undefined ? 'config-changed' : ''}`}>
-                    <input
-                        type="checkbox"
-                        id="chk-debug"
-                        checked={isDebug}
-                        onChange={handleDebugChange}
-                    />
-                    <label for="chk-debug">开启视觉调试 (Debug)</label>
-                </div>
-
                 <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
                     <button class="bgi-btn action" onClick={onCrop}>📷 截图</button>
-                    <button class="bgi-btn secondary" onClick={() => bus.emit(EVENTS.TASK_STOP)}>⏹ 停止预览</button>
+                    <button
+                        class={`bgi-btn ${showPreview ? 'secondary' : 'info'}`}
+                        onClick={onTogglePreview}
+                    >
+                        {showPreview ? '🔴 隐藏预览' : '🟢 显示预览'}
+                    </button>
                 </div>
 
                 <div class="row" style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>

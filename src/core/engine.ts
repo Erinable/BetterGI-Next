@@ -335,9 +335,28 @@ export class Engine {
             // 额外检查：如果截图全是透明或纯黑，可能是截到了无效区域
             // 这里简单检查一下 data 长度确保不是空的
             if (templateData.data.length > 0) {
-                logger.info('engine', 'Crop successful, starting preview');
-                bus.emit(EVENTS.STATUS_UPDATE, '截图成功! 已复制到剪贴板');
-                this.startPreviewTask(templateData);
+                logger.info('engine', 'Crop successful, starting ScreenshotMatchTask');
+                bus.emit(EVENTS.STATUS_UPDATE, '截图成功! 开始匹配任务');
+
+                // 动态导入并启动 ScreenshotMatchTask
+                const { ScreenshotMatchTask } = await import('../modules/tasks/screenshot-match-task');
+                const task = new ScreenshotMatchTask(templateData);
+                task.ctx = {
+                    input: this.input,
+                    vision: this.vision,
+                    algo: this.algo,
+                    engine: this
+                };
+
+                // 停止之前的任务
+                this.stopTask();
+
+                // 启动新任务
+                this.activeTask = task;
+                task.start();
+
+                // 通知 UI 任务已启动
+                bus.emit(EVENTS.STATUS_UPDATE, '截图匹配任务运行中...');
                 return;
             }
         }
@@ -350,112 +369,5 @@ export class Engine {
         // 浏览器的 "User Activation" 机制要求 alert 必须在用户操作的回调栈中直接调用
         alert('❌ 截图失败\n\n未检测到有效的游戏画面。\n请等待游戏完全加载并显示画面后再试。');
     }
-
-
-	startPreviewTask(template: ImageData) {
-        this.stopTask();
-
-        // [修复] 使用闭包变量存储 timeoutId，确保 stop 时能清理
-        let loopTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
-        const previewTask = {
-            name: 'Preview',
-            running: true,
-            ctx: { vision: this.vision, algo: this.algo } as any,
-            start: () => {
-                logger.info('engine', 'Starting preview mode');
-
-                const loop = async () => {
-                    if (!previewTask.running) return;
-
-                    const screen = this.vision.getImageData();
-                    if (screen) {
-                        const t0 = performance.now();
-
-                        // 获取 Preview 任务的 ROI 配置 (如果有)
-                        const previewRoi = configManager.getROIForTemplate('Preview');
-
-                        const rawRes = await this.vision.match(screen, template, {
-                            threshold: this.config.threshold,
-                            downsample: this.config.downsample,
-                            scales: this.config.scales,
-                            // 如果有配置 ROI，则启用并传递
-                            roiEnabled: !!previewRoi,
-                            roiRegions: previewRoi ? [{
-                                x: previewRoi.x,
-                                y: previewRoi.y,
-                                w: previewRoi.w,
-                                h: previewRoi.h
-                            }] : []
-                        });
-
-                        // [关键修复] Worker 不返回宽高，我们需要手动补全
-                        const res = rawRes ? {
-                            ...rawRes,
-                            w: template.width,
-                            h: template.height
-                        } : null;
-
-                        const cost = performance.now() - t0;
-
-                        if (res && res.score >= (this.config.threshold)) {
-                            const info = this.vision.getDisplayInfo();
-
-                            if (info && this.config.debug) {
-                                // 坐标映射
-                                const screenX = info.offsetX + (res.x * info.scaleX);
-                                const screenY = info.offsetY + (res.y * info.scaleY);
-                                const screenW = res.w * info.scaleX;
-                                const screenH = res.h * info.scaleY;
-
-                                const matchScale = (res as any).bestScale || 1.0;
-                                const finalW = screenW * matchScale;
-                                const finalH = screenH * matchScale;
-                                bus.emit(EVENTS.DEBUG_DRAW, {
-                                    x: screenX + finalW/2,
-                                    y: screenY + finalH/2,
-                                    w: finalW,
-                                    h: finalH,
-                                    score: res.score,
-                                    cost: cost,
-                                    label: 'Preview'
-                                });
-                            }
-                        } else if (res && this.config.debug) {
-                            // 即使分数低于阈值也显示 HUD 反馈 (灰色表示低置信度)
-                            const info = this.vision.getDisplayInfo();
-                            if (info) {
-                                bus.emit(EVENTS.DEBUG_DRAW, {
-                                    x: info.offsetX + (res.x * info.scaleX),
-                                    y: info.offsetY + (res.y * info.scaleY),
-                                    w: 0, h: 0, // 不显示框，只更新 HUD
-                                    score: res.score,
-                                    cost: cost,
-                                    label: 'Preview (低置信度)'
-                                });
-                            }
-                        }
-                    }
-                    // [修复] 保存 timeoutId 以便清理
-                    if (previewTask.running) {
-                        loopTimeoutId = setTimeout(loop, 100);
-                    }
-                };
-                loop();
-            },
-            stop: () => {
-                previewTask.running = false;
-                // [修复] 清理待执行的 timeout
-                if (loopTimeoutId !== null) {
-                    clearTimeout(loopTimeoutId);
-                    loopTimeoutId = null;
-                }
-                // 清空调试层
-                bus.emit(EVENTS.DEBUG_CLEAR);
-            }
-        };
-
-        this.activeTask = previewTask as any;
-        previewTask.start();
-    }
 }
+
