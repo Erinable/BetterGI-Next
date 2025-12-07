@@ -4,10 +4,355 @@ import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { PerformancePanel } from './PerformancePanel';
 import { ROIEditor } from './ROIEditor';
+import { TaskEditor } from './TaskEditor';
 import { Modal } from './Modal';
 import { config as configManager, ROIRegion } from '../../core/config-manager';
 import { logger } from '../../core/logging/logger';
 import { LogLevel } from '../../core/logging/types';
+import { macroManager, MacroRecording, formatDuration } from '../../core/macro-manager';
+
+// 获取真实的 window
+const getRealWindow = () => (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+const getInput = () => (getRealWindow() as any).BetterGi?.input;
+
+/**
+ * 宏录制控制组件
+ */
+function MacroControls() {
+    // 输入系统状态
+    const [isReady, setIsReady] = useState(false);
+    const [isHijacked, setIsHijacked] = useState(false);
+    const [isRecording, setIsRecording] = useState(false);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isPaused, setIsPaused] = useState(false);
+
+    // 宏列表状态
+    const [macros, setMacros] = useState<MacroRecording[]>([]);
+    const [selectedMacroId, setSelectedMacroId] = useState<string | null>(null);
+    const [editMode, setEditMode] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+    // 进度
+    const [progress, setProgress] = useState({ current: 0, total: 0 });
+
+    // 刷新宏列表
+    const refreshMacros = () => {
+        setMacros(macroManager.listMacros());
+    };
+
+    useEffect(() => {
+        refreshMacros();
+
+        const timer = setInterval(() => {
+            const input = getInput();
+            if (input) {
+                setIsReady(true);
+                setIsHijacked(input.isHijacked);
+                setIsRecording(input.isRecording);
+                setIsPlaying(input.isPlaying);
+                setIsPaused(input.isPaused);
+            } else {
+                setIsReady(false);
+            }
+        }, 300);
+
+        return () => clearInterval(timer);
+    }, []);
+
+    // === 操作处理 ===
+    const handleHijack = () => {
+        const input = getInput();
+        if (input?.hijack()) setIsHijacked(true);
+    };
+
+    const handleStartRecording = () => {
+        const input = getInput();
+        if (input) {
+            input.startRecording();
+            setIsRecording(true);
+        }
+    };
+
+    const handleStopRecording = () => {
+        const input = getInput();
+        if (!input) return;
+
+        const records = input.stopRecording();
+        if (records.length > 0) {
+            const name = prompt('请输入宏名称:', `录制 ${new Date().toLocaleTimeString()}`);
+            if (name) {
+                macroManager.saveMacro(name, records);
+                refreshMacros();
+            }
+        }
+        setIsRecording(false);
+    };
+
+    // 操作锁，防止快速点击导致的状态混乱
+    const [isOperating, setIsOperating] = useState(false);
+
+    const handlePlay = async () => {
+        if (isOperating || isPlaying) return;  // 防抖
+        const input = getInput();
+        if (!input || !selectedMacroId) return;
+
+        const macro = macroManager.getMacro(selectedMacroId);
+        if (!macro) return;
+
+        setIsOperating(true);
+        try {
+            await input.playback(macro.records, {
+                speedMultiplier: 1.0,
+                onProgress: (current: number, total: number) => setProgress({ current, total }),
+                onComplete: () => setProgress({ current: 0, total: 0 })
+            });
+        } finally {
+            setIsOperating(false);
+        }
+    };
+
+    const handlePause = () => {
+        // 暂停不应该被 isOperating 阻止，它是用来中断播放的
+        getInput()?.pausePlayback();
+    };
+
+    const handleResume = async () => {
+        if (isOperating) return;
+        setIsOperating(true);
+        try {
+            await getInput()?.resumePlayback();
+        } finally {
+            setIsOperating(false);
+        }
+    };
+
+    const handleStop = () => {
+        // 停止不应该被 isOperating 阻止，它是紧急中断
+        getInput()?.stopPlayback();
+        setProgress({ current: 0, total: 0 });
+    };
+
+    const handleRestart = async () => {
+        if (isOperating) return;
+        setIsOperating(true);
+        try {
+            await getInput()?.restartPlayback();
+        } finally {
+            setIsOperating(false);
+        }
+    };
+
+    // === 批量操作 ===
+    const toggleSelect = (id: string) => {
+        const newSet = new Set(selectedIds);
+        if (newSet.has(id)) newSet.delete(id);
+        else newSet.add(id);
+        setSelectedIds(newSet);
+    };
+
+    const handleBatchDelete = () => {
+        if (selectedIds.size === 0) return;
+        if (confirm(`确定删除 ${selectedIds.size} 个宏?`)) {
+            macroManager.deleteMacros(Array.from(selectedIds));
+            setSelectedIds(new Set());
+            refreshMacros();
+        }
+    };
+
+    const handleBatchExport = () => {
+        if (selectedIds.size === 0) return;
+        const json = macroManager.exportMacros(Array.from(selectedIds));
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `macros-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const handleBatchCopy = () => {
+        if (selectedIds.size === 0) return;
+        macroManager.duplicateMacros(Array.from(selectedIds));
+        setSelectedIds(new Set());
+        refreshMacros();
+    };
+
+    const handleRename = () => {
+        if (selectedIds.size !== 1) return;
+        const id = Array.from(selectedIds)[0];
+        const macro = macroManager.getMacro(id);
+        if (!macro) return;
+        const newName = prompt('请输入新名称:', macro.name);
+        if (newName && newName !== macro.name) {
+            macroManager.renameMacro(id, newName);
+            refreshMacros();
+        }
+    };
+
+    const handleImport = () => {
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.json';
+        fileInput.onchange = (e: any) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (re: any) => {
+                    const result = macroManager.importMacros(re.target.result);
+                    if (result.success) {
+                        alert(`✅ 导入成功: ${result.count} 个宏`);
+                        refreshMacros();
+                    } else {
+                        alert(`❌ 导入失败: ${result.error}`);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        };
+        fileInput.click();
+    };
+
+    // === 渲染 ===
+    if (!isReady) {
+        return <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>等待输入系统...</div>;
+    }
+
+    if (!isHijacked) {
+        return (
+            <button class="bgi-btn warning" style={{ fontSize: '11px', padding: '8px', width: '100%' }} onClick={handleHijack}>
+                🔓 启用宏录制
+            </button>
+        );
+    }
+
+    return (
+        <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '8px' }}>
+            {/* 标题栏 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                    📁 已保存 ({macros.length})
+                </span>
+                <button
+                    class="bgi-btn secondary"
+                    style={{ fontSize: '10px', padding: '2px 8px' }}
+                    onClick={() => { setEditMode(!editMode); setSelectedIds(new Set()); }}
+                >
+                    {editMode ? '完成' : '编辑'}
+                </button>
+            </div>
+
+            {/* 宏列表 */}
+            <div style={{ maxHeight: '120px', overflowY: 'auto', marginBottom: '8px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+                {macros.length === 0 ? (
+                    <div style={{ padding: '12px', textAlign: 'center', fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                        暂无录制
+                    </div>
+                ) : macros.map(macro => (
+                    <div
+                        key={macro.id}
+                        onClick={() => !editMode && setSelectedMacroId(macro.id)}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '6px 8px',
+                            borderBottom: '1px solid rgba(255,255,255,0.05)',
+                            cursor: 'pointer',
+                            background: selectedMacroId === macro.id && !editMode ? 'rgba(74, 222, 128, 0.15)' : 'transparent'
+                        }}
+                    >
+                        {editMode && (
+                            <input
+                                type="checkbox"
+                                checked={selectedIds.has(macro.id)}
+                                onChange={() => toggleSelect(macro.id)}
+                                style={{ marginRight: '8px' }}
+                            />
+                        )}
+                        <span style={{ flex: 1, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {macro.name}
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--color-text-secondary)', marginLeft: '8px' }}>
+                            {formatDuration(macro.duration)}
+                        </span>
+                    </div>
+                ))}
+            </div>
+
+            {/* 编辑模式 - 批量操作 */}
+            {editMode && (
+                <div style={{ marginBottom: '8px' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', marginBottom: '6px' }}>
+                        已选 {selectedIds.size} 项
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
+                        <button class="bgi-btn secondary" style={{ fontSize: '10px', padding: '4px', flex: 1 }} onClick={handleRename} disabled={selectedIds.size !== 1}>✏️重命名</button>
+                        <button class="bgi-btn secondary" style={{ fontSize: '10px', padding: '4px', flex: 1 }} onClick={handleBatchCopy} disabled={selectedIds.size === 0}>📋复制</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                        <button class="bgi-btn secondary" style={{ fontSize: '10px', padding: '4px', flex: 1 }} onClick={handleBatchExport} disabled={selectedIds.size === 0}>📥导出</button>
+                        <button class="bgi-btn danger" style={{ fontSize: '10px', padding: '4px', flex: 1 }} onClick={handleBatchDelete} disabled={selectedIds.size === 0}>🗑️删除</button>
+                    </div>
+                    <button class="bgi-btn secondary" style={{ fontSize: '10px', padding: '4px', width: '100%', marginTop: '4px' }} onClick={handleImport}>
+                        📤 导入文件...
+                    </button>
+                </div>
+            )}
+
+            {/* 正常模式 - 播放控制 */}
+            {!editMode && (
+                <>
+                    {/* 进度条 */}
+                    {progress.total > 0 && (
+                        <div style={{ marginBottom: '8px' }}>
+                            <div style={{ fontSize: '10px', color: 'var(--color-text-secondary)', marginBottom: '4px' }}>
+                                {progress.current}/{progress.total} ({Math.round(progress.current / progress.total * 100)}%)
+                            </div>
+                            <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+                                <div style={{ width: `${progress.current / progress.total * 100}%`, height: '100%', background: 'var(--color-primary)', transition: 'width 0.1s' }} />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 播放控制按钮 */}
+                    <div style={{ display: 'flex', gap: '4px', marginBottom: '8px' }}>
+                        {!isPlaying && !isPaused ? (
+                            <button class="bgi-btn primary" style={{ fontSize: '11px', padding: '6px', flex: 1 }} onClick={handlePlay} disabled={!selectedMacroId || isRecording}>
+                                ▶️ 播放
+                            </button>
+                        ) : isPaused ? (
+                            <button class="bgi-btn primary" style={{ fontSize: '11px', padding: '6px', flex: 1 }} onClick={handleResume}>
+                                ▶️ 继续
+                            </button>
+                        ) : (
+                            <button class="bgi-btn warning" style={{ fontSize: '11px', padding: '6px', flex: 1 }} onClick={handlePause}>
+                                ⏸️ 暂停
+                            </button>
+                        )}
+                        <button class="bgi-btn secondary" style={{ fontSize: '11px', padding: '6px', flex: 1 }} onClick={handleStop} disabled={!isPlaying && !isPaused}>
+                            ⏹️ 停止
+                        </button>
+                        <button class="bgi-btn secondary" style={{ fontSize: '11px', padding: '6px', flex: 1 }} onClick={handleRestart} disabled={!isPlaying && !isPaused}>
+                            🔄 重放
+                        </button>
+                    </div>
+
+                    {/* 录制按钮 */}
+                    {isRecording ? (
+                        <button class="bgi-btn danger" style={{ fontSize: '11px', padding: '8px', width: '100%' }} onClick={handleStopRecording}>
+                            ⏹️ 停止录制并保存
+                        </button>
+                    ) : (
+                        <button class="bgi-btn secondary" style={{ fontSize: '11px', padding: '8px', width: '100%' }} onClick={handleStartRecording} disabled={isPlaying}>
+                            🔴 新建录制
+                        </button>
+                    )}
+                </>
+            )}
+        </div>
+    );
+}
+
 
 interface AppProps {
     initialPos: { x: number; y: number };
@@ -15,6 +360,7 @@ interface AppProps {
     onClose: () => void;
     onCrop: () => void;
     onAddRoi: () => void;
+    onCaptureAsset?: (taskName: string, assetName: string, mode: 'base64' | 'roi') => void;
     showPreview?: boolean;
     onTogglePreview?: () => void;
 }
@@ -22,7 +368,7 @@ interface AppProps {
 // Helper to get pending region from drag event
 const ROI_PENDING_EVENT = 'roi:pending_creation';
 
-export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPreview = true, onTogglePreview }: AppProps) {
+export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCaptureAsset, showPreview = true, onTogglePreview }: AppProps) {
     const { pos, startDrag } = useDraggable({
         initialPos,
         onDragEnd: onPosChange,
@@ -30,7 +376,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
     });
 
     // --- State ---
-    const [activeTab, setActiveTab] = useState<'general' | 'roi' | 'system'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'task' | 'macro' | 'system'>('general');
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
 
@@ -173,7 +519,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
                 {/* Tabs */}
                 <div class="segmented-control">
                     <button class={activeTab === 'general' ? 'active' : ''} onClick={() => setActiveTab('general')}>通用</button>
-                    <button class={activeTab === 'roi' ? 'active' : ''} onClick={() => setActiveTab('roi')}>ROI 区域</button>
+                    <button class={activeTab === 'task' ? 'active' : ''} onClick={() => setActiveTab('task')}>任务</button>
+                    <button class={activeTab === 'macro' ? 'active' : ''} onClick={() => setActiveTab('macro')}>录制</button>
                     <button class={activeTab === 'system' ? 'active' : ''} onClick={() => setActiveTab('system')}>系统</button>
                 </div>
 
@@ -240,26 +587,57 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
                         </div>
                     )}
 
-                    {/* --- ROI TAB --- */}
-                    {activeTab === 'roi' && (
+                    {/* --- TASK TAB --- */}
+                    {activeTab === 'task' && (
                         <div class="fade-in">
-                            <div class={`row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <input
-                                    type="checkbox"
-                                    id="roi-toggle"
-                                    checked={roiEnabled}
-                                    onChange={(e: any) => handleConfigChange('roiEnabled', e.target.checked)}
-                                />
-                                <label for="roi-toggle" style={{ marginBottom: 0, cursor: 'pointer' }}>启用区域匹配 (性能↑)</label>
-                            </div>
+                            <TaskEditor
+                                registeredTasks={registeredTasks}
+                                onCaptureAsset={(taskName, assetName, mode) => {
+                                    if (onCaptureAsset) {
+                                        onCaptureAsset(taskName, assetName, mode);
+                                    }
+                                }}
+                            />
 
-                            {roiEnabled && (
-                                <ROIEditor
-                                    regions={roiRegions}
-                                    onChange={(list: ROIRegion[]) => handleConfigChange('roiRegions', list)}
-                                    onAdd={onAddRoi}
-                                />
-                            )}
+                            {/* ROI 设置 (collapsible) */}
+                            <details style={{ marginTop: '12px' }}>
+                                <summary style={{ fontSize: '11px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '6px 0' }}>
+                                    高级: 全局 ROI 区域设置
+                                </summary>
+                                <div style={{ marginTop: '8px' }}>
+                                    <div class={`row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <input
+                                            type="checkbox"
+                                            id="roi-toggle"
+                                            checked={roiEnabled}
+                                            onChange={(e: any) => handleConfigChange('roiEnabled', e.target.checked)}
+                                        />
+                                        <label for="roi-toggle" style={{ marginBottom: 0, cursor: 'pointer' }}>启用全局区域匹配</label>
+                                    </div>
+                                    {roiEnabled && (
+                                        <ROIEditor
+                                            regions={roiRegions}
+                                            onChange={(list: ROIRegion[]) => handleConfigChange('roiRegions', list)}
+                                            onAdd={onAddRoi}
+                                        />
+                                    )}
+                                </div>
+                            </details>
+                        </div>
+                    )}
+
+                    {/* --- MACRO TAB --- */}
+                    {activeTab === 'macro' && (
+                        <div class="fade-in">
+                            <div style={{ marginBottom: '12px' }}>
+                                <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>
+                                    🎮 宏录制
+                                </label>
+                                <p style={{ fontSize: '10px', color: 'var(--color-text-secondary)', margin: '0 0 8px 0' }}>
+                                    录制手柄输入并回放，用于自动化操作。
+                                </p>
+                            </div>
+                            <MacroControls />
                         </div>
                     )}
 
@@ -336,6 +714,8 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
                                     🔄 重置配置
                                 </button>
                             </div>
+
+
 
                             <div style={{ marginTop: '12px' }}>
                                 <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '6px', display: 'block' }}>高级设置</label>

@@ -1,8 +1,12 @@
 // src/index.ts
 import { Engine } from './core/engine';
 import { OverlayManager } from './ui/overlay';
-import { AutoSkipTask } from './modules/tasks/demo-task';
+import { AutoPickTask } from './modules/tasks/auto-pick-task';
+import { AutoSkipTask } from './modules/tasks/auto-skip-task';
 import { logger } from './core/logging/logger';
+
+// 获取真实的页面 window 对象 (用于暴露全局变量到控制台)
+const realWindow = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
 (async function() {
     logger.info('app', 'BetterGi initializing...');
@@ -10,61 +14,46 @@ import { logger } from './core/logging/logger';
     // 1. 初始化引擎
     const engine = new Engine();
 
-    // 2. 确保全局对象正确暴露 - 多重保险
-    const globalObj = window as any;
-    globalObj.BetterGi = { engine, vision: engine.vision };
+    // 2. 暴露到真实的页面 window (这样控制台才能访问)
+    const globalObj = realWindow as any;
 
-    // 备份到多个可能的命名空间
+    globalObj.BetterGi = { engine, vision: engine.vision, input: engine.input };
     globalObj._BetterGiDebug = { engine };
-    globalObj.BETTERGI = { engine };
 
-    // 确保不可删除
-    Object.defineProperty(globalObj, 'BetterGi', {
-        value: { engine, vision: engine.vision },
-        writable: false,
-        configurable: false,
-        enumerable: true
-    });
+    // 暴露诊断工具
+    globalObj.BetterGiDiag = {
+        check: () => {
+            const status = {
+                hasBXExposed: !!realWindow.BX_EXPOSED,
+                hasInputChannel: !!realWindow.BX_EXPOSED?.inputChannel,
+                inputChannelType: realWindow.BX_EXPOSED?.inputChannel?.constructor?.name,
+                timestamp: new Date().toISOString()
+            };
+            console.log('Better-xCloud Status:', status);
+            return status;
+        },
+        hijackTest: () => {
+            return engine.input.diagnoseHijackability();
+        }
+    };
 
-    // 暴露简单的状态检查工具到全局
-    try {
-        globalObj.BetterGiDiag = {
-            check: () => {
-                // 使用 unsafeWindow 来检查真实的页面状态
-                const realWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-                const status = {
-                    hasBXExposed: !!realWin.BX_EXPOSED,
-                    hasInputChannel: !!realWin.BX_EXPOSED?.inputChannel,
-                    inputChannelType: realWin.BX_EXPOSED?.inputChannel?.constructor?.name,
-                    usingUnsafeWindow: typeof unsafeWindow !== 'undefined',
-                    timestamp: new Date().toISOString()
-                };
-                console.log('Better-xCloud Status:', status);
-                return status;
-            }
-        };
-
-        logger.info('app', '🔍 Simple diagnostic tools exposed globally');
-
-    } catch (e) {
-        logger.warn('app', 'Could not load diagnostic tools', { error: e });
-    }
+    logger.info('app', '🔍 Diagnostic tools exposed to realWindow');
 
     // 添加调试日志确认暴露成功
-    console.log('✅ BetterGi v2.0 已加载到全局:', {
+    console.log('✅ BetterGi v2.0 已加载到全局 (unsafeWindow):', {
         BetterGi: !!globalObj.BetterGi,
-        engine: !!globalObj.BetterGi.engine,
-        input: !!globalObj.BetterGi.engine?.input,
-        vision: !!globalObj.BetterGi.engine?.vision,
+        engine: !!globalObj.BetterGi?.engine,
+        input: !!globalObj.BetterGi?.input,
+        vision: !!globalObj.BetterGi?.vision,
         diagnostic: !!globalObj.BetterGiDiag
     });
 
     // 3. 初始化 UI
     new OverlayManager();
 
-    // 4. 注册任务
-    const skipTask = new AutoSkipTask();
-    engine.registerTask(skipTask);
+    // 4. 注册任务 (基于 Migration Logic Map)
+    engine.registerTask(new AutoPickTask());
+    engine.registerTask(new AutoSkipTask());
 
     // 5. 延迟确认全局对象仍然可用
     setTimeout(() => {

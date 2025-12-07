@@ -64,4 +64,7 @@ export const EVENTS = {
     PERFORMANCE_METRICS_UPDATE: 'performance:metrics_update',
     PERFORMANCE_CACHE_HIT: 'performance:cache_hit',
     PERFORMANCE_CACHE_MISS: 'performance:cache_miss',
+    // 任务资产相关事件
+    ASSETS_CHANGED: 'assets:changed',           // 任务资产更新 (payload: taskName)
+    TASK_CONFIG_UPDATE: 'task:config_update',   // 任务配置更新 (payload: taskName)
 };

@@ -2,7 +2,7 @@
 import { InputSystem } from './input';
 import { VisionSystem } from './vision';
 import { AlgoSystem } from './algo';
-import { Engine } from './engine';
+import type { Engine } from './engine';
 import { logger } from './logging/logger';
 
 export interface TaskContext {
@@ -12,11 +12,28 @@ export interface TaskContext {
     engine: Engine;
 }
 
+/**
+ * 资产声明 - 每个任务声明需要的资产
+ */
+export interface AssetSchema {
+    name: string;        // 资产名称 (唯一标识)
+    description: string; // 描述 (显示在 UI)
+    required?: boolean;  // 是否必须 (默认 true)
+}
+
 export abstract class BaseTask {
     name: string;
     running: boolean = false;
     interval: number = 1000; // 默认循环间隔 (ms)
+    priority: number = 0;    // 优先级，数值越大优先级越高
+    isExclusive: boolean = false; // 是否独占模式 (独占时暂停其他低优先级任务)
     ctx!: TaskContext;       // 由 Engine 注入
+
+    /**
+     * 声明任务需要的资产 (Schema)
+     * 子类在构造函数中设置
+     */
+    requiredAssets: AssetSchema[] = [];
 
     // 新增: 生命周期管理
     private loopTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -58,6 +75,16 @@ export abstract class BaseTask {
             // 检查是否仍然是当前实例 (防止多个 loop 并行)
             if (!this.running || this.loopInstanceId !== currentInstanceId) {
                 logger.debug('task', `${this.name} loop terminated (instance mismatch or stopped)`);
+                return;
+            }
+
+            // [新增] 检查独占任务
+            if (!this.isExclusive && this.ctx.engine.hasExclusiveTask && this.ctx.engine.hasExclusiveTask()) {
+                // 如果当前任务不是独占的，且有独占任务在运行，则暂停执行
+                // 暂时简单的延时重试
+                if (this.running && this.loopInstanceId === currentInstanceId) {
+                    this.loopTimeoutId = setTimeout(loop, 200);
+                }
                 return;
             }
 
