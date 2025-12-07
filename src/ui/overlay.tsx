@@ -1,5 +1,5 @@
 import { h, render } from 'preact';
-import { CropLayer } from './components/CropLayer'; // [新增]
+import { CropLayer } from './components/CropLayer';
 import { useState } from 'preact/hooks';
 import { App } from './components/App';
 import { DebugLayer } from './components/DebugLayer';
@@ -8,6 +8,13 @@ import { bus, EVENTS } from '../utils/event-bus';
 import { config as configManager } from '../core/config-manager';
 import cssContent from './styles-compat.css';
 
+// 捕获上下文 (复用截图/ROI 逻辑)
+interface CaptureContext {
+    type: 'screenshot' | 'roi' | 'asset-base64' | 'asset-roi';
+    taskName?: string;
+    assetName?: string;
+}
+
 function Root() {
     const [showPanel, setShowPanel] = useState(false);
 
@@ -15,70 +22,110 @@ function Root() {
     const [ballPos, setBallPos] = useState({ x: 0, y: 100 });
     const [panelPos, setPanelPos] = useState({ x: 100, y: 100 });
 
-    // 截图状态
-    const [isCropping, setIsCropping] = useState(false);
-
-    // ROI 添加状态
-    const [isAddingRoi, setIsAddingRoi] = useState(false);
+    // 统一的截图/框选状态
+    const [isCapturing, setIsCapturing] = useState(false);
+    const [captureContext, setCaptureContext] = useState<CaptureContext | null>(null);
 
     // 预览可见性状态
     const [showDebugLayer, setShowDebugLayer] = useState(true);
 
-    const handleCropStart = () => {
+    // 通用截图开始
+    const startCapture = (context: CaptureContext) => {
         bus.emit(EVENTS.TASK_STOP);
         setShowPanel(false);
-        setIsCropping(true);
+        setCaptureContext(context);
+        setIsCapturing(true);
     };
 
-    const handleCropConfirm = (rect: { x: number, y: number, w: number, h: number }) => {
-        setIsCropping(false);
+    // 通用截图确认
+    const handleCaptureConfirm = async (rect: { x: number, y: number, w: number, h: number }) => {
+        setIsCapturing(false);
         setShowPanel(true);
-        bus.emit(EVENTS.CROP_REQUEST, rect);
+
+        if (!captureContext) return;
+
+        const { type, taskName, assetName } = captureContext;
+
+        // 坐标转换: 屏幕坐标 → 游戏坐标
+        const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+        let gameRect = rect;
+        if (displayInfo) {
+            gameRect = {
+                x: Math.floor((rect.x - displayInfo.offsetX) / displayInfo.scaleX),
+                y: Math.floor((rect.y - displayInfo.offsetY) / displayInfo.scaleY),
+                w: Math.floor(rect.w / displayInfo.scaleX),
+                h: Math.floor(rect.h / displayInfo.scaleY),
+            };
+        }
+
+        switch (type) {
+            case 'screenshot':
+                // 原有截图逻辑: 发送给 engine 处理
+                bus.emit(EVENTS.CROP_REQUEST, rect);
+                break;
+
+            case 'roi':
+                // 原有 ROI 逻辑: 触发 Modal
+                setTimeout(() => bus.emit('roi:drawn', rect), 100);
+                break;
+
+            case 'asset-base64':
+                // 资产 Base64 捕获: 复用 engine 的 captureTemplate
+                if (taskName && assetName) {
+                    bus.emit('asset:capture-base64', { taskName, assetName, rect });
+                }
+                break;
+
+            case 'asset-roi':
+                // 资产 ROI 捕获: 直接更新配置
+                if (taskName && assetName) {
+                    const assets = configManager.getTaskAssets(taskName);
+                    const asset = assets.find(a => a.name === assetName);
+                    if (asset) {
+                        configManager.setTaskAsset(taskName, { ...asset, roi: gameRect });
+                        bus.emit(EVENTS.ASSETS_CHANGED, taskName);
+                    }
+                }
+                break;
+        }
+
+        setCaptureContext(null);
+    };
+
+    const handleCaptureCancel = () => {
+        setIsCapturing(false);
+        setShowPanel(true);
+        setCaptureContext(null);
     };
 
     const handleTogglePreview = () => {
         setShowDebugLayer(prev => !prev);
     };
 
-    const handleAddRoiStart = () => {
-        setShowPanel(false);
-        setIsAddingRoi(true);
-    };
-
-    const handleRoiDrawConfirm = (rect: { x: number, y: number, w: number, h: number }) => {
-        setIsAddingRoi(false);
-        setShowPanel(true);
-
-        // [修改] 不再弹出 prompt，而是发送事件给 App 组件处理 Modal
-        // 使用 setTimeout 确保 App 组件已经重新渲染并可见
-        setTimeout(() => {
-            bus.emit('roi:drawn', rect);
-        }, 100);
+    // 资产捕获快捷方法 (传给 App)
+    const handleCaptureAsset = (taskName: string, assetName: string, mode: 'base64' | 'roi') => {
+        startCapture({
+            type: mode === 'base64' ? 'asset-base64' : 'asset-roi',
+            taskName,
+            assetName
+        });
     };
 
     return (
         <div id="bgi-ui-root">
-            {/* 调试层 - 受 showDebugLayer 控制 */}
+            {/* 调试层 */}
             <DebugLayer visible={showDebugLayer} />
 
-            {/* 截图层 */}
-            {isCropping && (
+            {/* 统一的截图/框选层 */}
+            {isCapturing && (
                 <CropLayer
-                    onConfirm={handleCropConfirm}
-                    onCancel={() => { setIsCropping(false); setShowPanel(true); }}
-                />
-            )}
-
-            {/* ROI 绘制层 */}
-            {isAddingRoi && (
-                <CropLayer
-                    onConfirm={handleRoiDrawConfirm}
-                    onCancel={() => { setIsAddingRoi(false); setShowPanel(true); }}
+                    onConfirm={handleCaptureConfirm}
+                    onCancel={handleCaptureCancel}
                 />
             )}
 
             {/* 常规 UI */}
-            {!isCropping && !isAddingRoi && (
+            {!isCapturing && (
                 !showPanel ? (
                     <FloatBall
                         initialPos={ballPos}
@@ -90,8 +137,9 @@ function Root() {
                         initialPos={panelPos}
                         onPosChange={setPanelPos}
                         onClose={() => setShowPanel(false)}
-                        onCrop={handleCropStart}
-                        onAddRoi={handleAddRoiStart}
+                        onCrop={() => startCapture({ type: 'screenshot' })}
+                        onAddRoi={() => startCapture({ type: 'roi' })}
+                        onCaptureAsset={handleCaptureAsset}
                         showPreview={showDebugLayer}
                         onTogglePreview={handleTogglePreview}
                     />

@@ -17,6 +17,7 @@ declare global {
             vision: {
                 getDisplayInfo: () => { scaleX: number; scaleY: number; offsetX: number; offsetY: number } | null;
                 getPerformanceMetrics?: () => any;
+                captureTemplate?: (rect: { x: number; y: number; w: number; h: number }) => Promise<ImageData | null>;
             };
         };
     }

@@ -13,6 +13,27 @@ export interface ROIRegion {
     templateName?: string;     // 可选: 模板级 ROI (如 'auto_skip_dialog_icon')
 }
 
+// 任务资产定义
+export interface TaskAsset {
+    id: string;              // 唯一标识
+    name: string;            // 资产名称 (如 'pickup_icon')
+    base64: string;          // 模板图片 Base64
+    roi?: {                  // 可选 ROI 限制匹配区域
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+    };
+    threshold?: number;      // 可选阈值覆盖
+}
+
+// 任务配置定义
+export interface TaskConfig {
+    taskName: string;        // 任务名称 (如 '自动拾取')
+    enabled: boolean;        // 是否启用
+    assets: TaskAsset[];     // 该任务的模板资产列表
+}
+
 // 定义配置的形状
 export interface AppConfig {
     threshold: number;
@@ -33,6 +54,8 @@ export interface AppConfig {
     matchingMethod: 'TM_CCOEFF_NORMED' | 'TM_SQDIFF_NORMED' | 'TM_CCORR_NORMED';
     earlyTermination: boolean;
     templateCacheSize: number;
+    // 任务配置
+    tasks: TaskConfig[];
 }
 
 // 默认配置
@@ -55,6 +78,8 @@ const DEFAULT_CONFIG: AppConfig = {
     matchingMethod: 'TM_CCOEFF_NORMED',
     earlyTermination: true,
     templateCacheSize: 50,
+    // 任务配置
+    tasks: [],
 };
 
 export class ConfigManager {
@@ -247,6 +272,116 @@ export class ConfigManager {
             grouped.get(scope)!.push(region);
         }
         return grouped;
+    }
+
+    // ========== 任务资产管理方法 ==========
+
+    /**
+     * 获取任务配置
+     */
+    getTaskConfig(taskName: string): TaskConfig | undefined {
+        return this.config.tasks.find(t => t.taskName === taskName);
+    }
+
+    /**
+     * 获取任务资产列表
+     */
+    getTaskAssets(taskName: string): TaskAsset[] {
+        const taskConfig = this.getTaskConfig(taskName);
+        return taskConfig?.assets || [];
+    }
+
+    /**
+     * 获取所有任务配置
+     */
+    getAllTasks(): TaskConfig[] {
+        return this.config.tasks;
+    }
+
+    /**
+     * 设置任务启用状态
+     */
+    setTaskEnabled(taskName: string, enabled: boolean): void {
+        let taskConfig = this.getTaskConfig(taskName);
+        if (!taskConfig) {
+            // 如果任务配置不存在，创建一个新的
+            taskConfig = { taskName, enabled, assets: [] };
+            this.config.tasks.push(taskConfig);
+        } else {
+            taskConfig.enabled = enabled;
+        }
+        this.saveConfig();
+        logger.info('config', `Task ${taskName} enabled: ${enabled}`);
+    }
+
+    /**
+     * 检查任务是否启用
+     */
+    isTaskEnabled(taskName: string): boolean {
+        const taskConfig = this.getTaskConfig(taskName);
+        return taskConfig?.enabled ?? true; // 默认启用
+    }
+
+    /**
+     * 添加或更新任务资产
+     */
+    setTaskAsset(taskName: string, asset: Omit<TaskAsset, 'id'> & { id?: string }): TaskAsset {
+        let taskConfig = this.getTaskConfig(taskName);
+        if (!taskConfig) {
+            taskConfig = { taskName, enabled: true, assets: [] };
+            this.config.tasks.push(taskConfig);
+        }
+
+        const assetId = asset.id || `asset_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const existingIndex = taskConfig.assets.findIndex(a => a.id === asset.id || a.name === asset.name);
+
+        const newAsset: TaskAsset = {
+            id: assetId,
+            name: asset.name,
+            base64: asset.base64,
+            roi: asset.roi,
+            threshold: asset.threshold,
+        };
+
+        if (existingIndex !== -1) {
+            taskConfig.assets[existingIndex] = newAsset;
+        } else {
+            taskConfig.assets.push(newAsset);
+        }
+
+        this.saveConfig();
+        logger.info('config', `Task asset updated: ${taskName}/${asset.name}`);
+        return newAsset;
+    }
+
+    /**
+     * 删除任务资产
+     */
+    removeTaskAsset(taskName: string, assetId: string): boolean {
+        const taskConfig = this.getTaskConfig(taskName);
+        if (!taskConfig) return false;
+
+        const index = taskConfig.assets.findIndex(a => a.id === assetId);
+        if (index !== -1) {
+            taskConfig.assets.splice(index, 1);
+            this.saveConfig();
+            logger.info('config', `Task asset removed: ${taskName}/${assetId}`);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 初始化任务配置 (如果不存在)
+     */
+    ensureTaskConfig(taskName: string): TaskConfig {
+        let taskConfig = this.getTaskConfig(taskName);
+        if (!taskConfig) {
+            taskConfig = { taskName, enabled: true, assets: [] };
+            this.config.tasks.push(taskConfig);
+            this.saveConfig();
+        }
+        return taskConfig;
     }
 }
 

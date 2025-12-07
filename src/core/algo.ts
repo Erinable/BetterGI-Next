@@ -49,20 +49,45 @@ export class AlgoSystem {
     }
 
     /**
+     * 获取已注册的素材
+     * @param name 素材名称
+     */
+    getAsset(name: string): Asset | undefined {
+        return this.assets.get(name);
+    }
+
+    /**
      * 异步查找目标
      * @param screen 当前屏幕截图
      * @param name 素材名称
-     * @param options 匹配参数
+     * @param options 匹配参数 (支持 roi)
      */
-    async findAsync(screen: ImageData, name: string, options: { threshold?: number, downsample?: number } = {}) {
+    async findAsync(
+        screen: ImageData,
+        name: string,
+        options: {
+            threshold?: number;
+            downsample?: number;
+            roi?: { x: number; y: number; w: number; h: number };
+        } = {}
+    ) {
         const asset = this.assets.get(name);
         if (!asset) {
             logger.warn('algo', `Asset not found: ${name}`);
             return null;
         }
 
+        // 构建匹配选项
+        const matchOptions: any = { ...options };
+
+        // 如果有 ROI，转换为 vision.match 需要的格式
+        if (options.roi && options.roi.w > 0 && options.roi.h > 0) {
+            matchOptions.roiEnabled = true;
+            matchOptions.roiRegions = [options.roi];
+        }
+
         // 调用 VisionSystem (最终传给 Worker) 进行匹配
-        const result = await this._vision.match(screen, asset.template, options);
+        const result = await this._vision.match(screen, asset.template, matchOptions);
 
         // 阈值判断
         const threshold = options.threshold || 0.8;

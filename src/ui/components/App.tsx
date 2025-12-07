@@ -4,6 +4,7 @@ import { useDraggable } from '../hooks/useDraggable';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { PerformancePanel } from './PerformancePanel';
 import { ROIEditor } from './ROIEditor';
+import { TaskEditor } from './TaskEditor';
 import { Modal } from './Modal';
 import { config as configManager, ROIRegion } from '../../core/config-manager';
 import { logger } from '../../core/logging/logger';
@@ -15,6 +16,7 @@ interface AppProps {
     onClose: () => void;
     onCrop: () => void;
     onAddRoi: () => void;
+    onCaptureAsset?: (taskName: string, assetName: string, mode: 'base64' | 'roi') => void;
     showPreview?: boolean;
     onTogglePreview?: () => void;
 }
@@ -22,7 +24,7 @@ interface AppProps {
 // Helper to get pending region from drag event
 const ROI_PENDING_EVENT = 'roi:pending_creation';
 
-export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPreview = true, onTogglePreview }: AppProps) {
+export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCaptureAsset, showPreview = true, onTogglePreview }: AppProps) {
     const { pos, startDrag } = useDraggable({
         initialPos,
         onDragEnd: onPosChange,
@@ -30,7 +32,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
     });
 
     // --- State ---
-    const [activeTab, setActiveTab] = useState<'general' | 'roi' | 'system'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'task' | 'system'>('general');
     const [status, setStatus] = useState('等待引擎...');
     const [running, setRunning] = useState(false);
 
@@ -173,7 +175,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
                 {/* Tabs */}
                 <div class="segmented-control">
                     <button class={activeTab === 'general' ? 'active' : ''} onClick={() => setActiveTab('general')}>通用</button>
-                    <button class={activeTab === 'roi' ? 'active' : ''} onClick={() => setActiveTab('roi')}>ROI 区域</button>
+                    <button class={activeTab === 'task' ? 'active' : ''} onClick={() => setActiveTab('task')}>任务</button>
                     <button class={activeTab === 'system' ? 'active' : ''} onClick={() => setActiveTab('system')}>系统</button>
                 </div>
 
@@ -240,26 +242,42 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, showPr
                         </div>
                     )}
 
-                    {/* --- ROI TAB --- */}
-                    {activeTab === 'roi' && (
+                    {/* --- TASK TAB --- */}
+                    {activeTab === 'task' && (
                         <div class="fade-in">
-                            <div class={`row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <input
-                                    type="checkbox"
-                                    id="roi-toggle"
-                                    checked={roiEnabled}
-                                    onChange={(e: any) => handleConfigChange('roiEnabled', e.target.checked)}
-                                />
-                                <label for="roi-toggle" style={{ marginBottom: 0, cursor: 'pointer' }}>启用区域匹配 (性能↑)</label>
-                            </div>
+                            <TaskEditor
+                                registeredTasks={registeredTasks}
+                                onCaptureAsset={(taskName, assetName, mode) => {
+                                    if (onCaptureAsset) {
+                                        onCaptureAsset(taskName, assetName, mode);
+                                    }
+                                }}
+                            />
 
-                            {roiEnabled && (
-                                <ROIEditor
-                                    regions={roiRegions}
-                                    onChange={(list: ROIRegion[]) => handleConfigChange('roiRegions', list)}
-                                    onAdd={onAddRoi}
-                                />
-                            )}
+                            {/* ROI 设置 (collapsible) */}
+                            <details style={{ marginTop: '12px' }}>
+                                <summary style={{ fontSize: '11px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '6px 0' }}>
+                                    高级: 全局 ROI 区域设置
+                                </summary>
+                                <div style={{ marginTop: '8px' }}>
+                                    <div class={`row ${pendingConfig.roiEnabled !== undefined ? 'config-changed' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <input
+                                            type="checkbox"
+                                            id="roi-toggle"
+                                            checked={roiEnabled}
+                                            onChange={(e: any) => handleConfigChange('roiEnabled', e.target.checked)}
+                                        />
+                                        <label for="roi-toggle" style={{ marginBottom: 0, cursor: 'pointer' }}>启用全局区域匹配</label>
+                                    </div>
+                                    {roiEnabled && (
+                                        <ROIEditor
+                                            regions={roiRegions}
+                                            onChange={(list: ROIRegion[]) => handleConfigChange('roiRegions', list)}
+                                            onAdd={onAddRoi}
+                                        />
+                                    )}
+                                </div>
+                            </details>
                         </div>
                     )}
 

@@ -1,7 +1,8 @@
 // src/index.ts
 import { Engine } from './core/engine';
 import { OverlayManager } from './ui/overlay';
-import { AutoSkipTask } from './modules/tasks/demo-task';
+import { AutoPickTask } from './modules/tasks/auto-pick-task';
+import { AutoSkipTask } from './modules/tasks/auto-skip-task';
 import { logger } from './core/logging/logger';
 
 (async function() {
@@ -62,9 +63,9 @@ import { logger } from './core/logging/logger';
     // 3. 初始化 UI
     new OverlayManager();
 
-    // 4. 注册任务
-    const skipTask = new AutoSkipTask();
-    engine.registerTask(skipTask);
+    // 4. 注册任务 (基于 Migration Logic Map)
+    engine.registerTask(new AutoPickTask());
+    engine.registerTask(new AutoSkipTask());
 
     // 5. 延迟确认全局对象仍然可用
     setTimeout(() => {
