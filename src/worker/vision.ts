@@ -3,544 +3,586 @@
 declare const cv: any;
 importScripts('https://docs.opencv.org/4.8.0/opencv.js');
 
-// 模板缓存
-const templateCache = new Map<string, { mat: any, width: number, height: number, timestamp: number }>();
-const CACHE_EXPIRE_TIME = 300000; // 5分钟
-const MAX_CACHE_SIZE = 50;
+// --- Interfaces ---
 
-// 性能统计
-let matchCount = 0;
-let totalTime = 0;
-
-// Worker 日志帮助函数 - 发送到主线程的 logger
-function workerLog(level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: any) {
-    self.postMessage({ type: 'WORKER_LOG', level, message, data });
+interface Rect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
 }
 
-// 工具函数：生成模板键
-function generateTemplateKey(template: ImageData, config: any): string {
-    return `${template.width}x${template.height}_${config.downsample || 1.0}_${JSON.stringify(config.scales || [1.0])}`;
+interface MatchConfig {
+    threshold?: number;
+    scales?: number[];
+    downsample?: number;
+    grayscale?: boolean;
+    adaptiveScaling?: boolean;
+    matchingMethod?: string;
+    earlyTermination?: boolean;
+    earlyExit?: boolean; // For batch match
+    roi?: {
+        enabled: boolean;
+        regions: Rect[];
+    };
 }
 
-// 工具函数：清理过期缓存
-function cleanCache() {
-    const now = Date.now();
-    for (const [key, value] of templateCache.entries()) {
-        if (now - value.timestamp > CACHE_EXPIRE_TIME || templateCache.size > MAX_CACHE_SIZE) {
-            value.mat.delete();
-            templateCache.delete(key);
+interface PerformanceStats {
+    duration: number;
+    matchCount: number;
+    averageTime: number;
+}
+
+interface MatchResult {
+    score: number;
+    x: number;
+    y: number;
+    scale?: number;     // Used for the final scale of the match
+    bestScale?: number; // Alias often used
+    usedROI: boolean;
+    adaptiveScaling: boolean;
+    cacheHit?: boolean;
+    performance?: PerformanceStats;
+    templateWidth?: number;
+    templateHeight?: number;
+}
+
+interface BatchMatchResultItem {
+    name: string;
+    score: number;
+    x: number;
+    y: number;
+    matched: boolean;
+    duration: number;
+    cacheHit: boolean;
+    usedROI: boolean;
+}
+
+interface ProcessedImage {
+    mat: any;
+    scaleFactor: number;
+    isGrayscale: boolean;
+}
+
+// --- Resource Management ---
+
+class MatScope {
+    private mats: any[] = [];
+
+    // Register a Mat (or Size/Rect) to be cleaned up later
+    add(mat: any): any {
+        if (mat && typeof mat.delete === 'function') {
+            this.mats.push(mat);
         }
+        return mat;
     }
-}
 
-// 工具函数：获取匹配方法
-function getMatchingMethod(method: string): number {
-    switch (method) {
-        case 'TM_SQDIFF_NORMED': return cv.TM_SQDIFF_NORMED;
-        case 'TM_CCORR_NORMED': return cv.TM_CCORR_NORMED;
-        case 'TM_CCOEFF_NORMED':
-        default: return cv.TM_CCOEFF_NORMED;
-    }
-}
-
-// 工具函数：转换为灰度图 (减少75%数据量，加速匹配)
-function toGrayscale(mat: any): any {
-    const gray = new cv.Mat();
-    if (mat.channels() === 4) {
-        cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-    } else if (mat.channels() === 3) {
-        cv.cvtColor(mat, gray, cv.COLOR_RGB2GRAY);
-    } else {
-        return mat.clone();
-    }
-    return gray;
-}
-
-// 灰度模板缓存
-const grayTemplateCache = new Map<string, { mat: any, timestamp: number }>();
-
-// 优化的多尺度匹配函数
-function optimizedMatchTemplate(src: any, templ: any, config: any): { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } {
-    let bestRes: { score: number, x: number, y: number, scale: number, adaptiveScaling: boolean, usedROI?: boolean } = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false };
-    const scales = config.scales || [1.0];
-    const method = getMatchingMethod(config.matchingMethod || 'TM_CCOEFF_NORMED');
-    const threshold = config.threshold || 0.8;
-    const earlyTermination = config.earlyTermination !== false;
-
-    // 自适应尺度策略：先用默认尺度快速匹配
-    if (config.adaptiveScaling && scales.length === 1) {
-        const defaultScale = scales[0];
-        let sTempl = defaultScale !== 1.0 ? new cv.Mat() : templ.clone();
-
-        if (defaultScale !== 1.0) {
-            cv.resize(templ, sTempl, new cv.Size(), defaultScale, defaultScale, cv.INTER_LINEAR);
-        }
-
-        if (sTempl.cols <= src.cols && sTempl.rows <= src.rows) {
-            let dst = new cv.Mat(), mask = new cv.Mat();
-            cv.matchTemplate(src, sTempl, dst, method, mask);
-            let res = cv.minMaxLoc(dst, mask);
-
-            // 对于SQDIFF方法，值越小越好
-            const score = method === cv.TM_SQDIFF_NORMED ? 1 - res.minVal : res.maxVal;
-
-            if (score >= threshold) {
-                bestRes = { score, x: res.maxLoc.x, y: res.maxLoc.y, scale: defaultScale, adaptiveScaling: true };
-            }
-
-            dst.delete(); mask.delete();
-        }
-
-        if (defaultScale !== 1.0) {
-            sTempl.delete();
-        }
-
-        // 如果找到高置信度匹配且启用早期终止，直接返回
-        if (bestRes.score >= threshold && earlyTermination) {
-            return bestRes;
+    // Execute a function within a scope, automatically cleaning up registered Mats
+    static run<T>(fn: (scope: MatScope) => T): T {
+        const scope = new MatScope();
+        try {
+            return fn(scope);
+        } finally {
+            scope.release();
         }
     }
 
-    // 标准多尺度匹配
-    for (let s of scales) {
-        let sTempl = new cv.Mat();
-        if (s !== 1.0) cv.resize(templ, sTempl, new cv.Size(), s, s, cv.INTER_LINEAR);
-        else sTempl = templ.clone();
-
-        if (sTempl.cols <= src.cols && sTempl.rows <= src.rows) {
-            let dst = new cv.Mat(), mask = new cv.Mat();
-            cv.matchTemplate(src, sTempl, dst, method, mask);
-            let res = cv.minMaxLoc(dst, mask);
-
-            // 对于SQDIFF方法，值越小越好
-            const score = method === cv.TM_SQDIFF_NORMED ? 1 - res.minVal : res.maxVal;
-
-            if (score > bestRes.score) {
-                bestRes = { score, x: res.maxLoc.x, y: res.maxLoc.y, scale: s, adaptiveScaling: false };
-            }
-
-            dst.delete(); mask.delete();
-
-            // 早期终止：如果找到高置信度匹配
-            if (score >= threshold && earlyTermination && score > 0.95) {
-                sTempl.delete();
-                break;
-            }
-        }
-        sTempl.delete();
-    }
-
-    return bestRes;
-}
-
-// ROI匹配函数
-function matchWithROI(src: any, templ: any, roi: any, config: any): any {
-    // 提取ROI区域
-    const roiRect = new cv.Rect(roi.x, roi.y, roi.w, roi.h);
-    const roiMat = src.roi(roiRect);
-
-    // 在ROI内匹配
-    const result = optimizedMatchTemplate(roiMat, templ, config);
-
-    // 清理
-    roiMat.delete();
-
-    // 调整坐标到原图并标记使用了ROI
-    if (result.score > 0) {
-        result.x += roi.x;
-        result.y += roi.y;
-    }
-    result.usedROI = true;
-
-    return result;
-}
-
-self.onmessage = (e: MessageEvent) => {
-    const { id, type, payload } = e.data;
-    if (typeof cv === 'undefined') return;
-
-    try {
-        if (type === 'INIT') {
-             // OpenCV 初始化检查
-             if (cv.Mat) self.postMessage({ type: 'INIT_DONE' });
-        }
-        else if (type === 'MATCH') {
-            const startTime = performance.now();
-            const { image, template, config } = payload;
-
-            let cacheHit = false;
-            let cachedTemplate = null;
-            const templateKey = generateTemplateKey(template, config);
-
-            // 清理过期缓存
-            cleanCache();
-
-            // 检查模板缓存
-            if (templateCache.has(templateKey)) {
-                cachedTemplate = templateCache.get(templateKey)!;
-                cacheHit = true;
-            }
-
-            // 接收主线程转移过来的 Buffer
-            let src = cv.matFromImageData(image);
-            let templ = cachedTemplate ? cachedTemplate.mat : cv.matFromImageData(template);
-
-            // 1. 降采样 - 智能处理小模板
-            let downsampleFactor = config.downsample || 0.33;
-
-            // 智能检测：如果模板降采样后太小（<16x16），跳过降采样
-            const minTemplateSize = 16;
-            const projectedTemplWidth = Math.floor(templ.cols * downsampleFactor);
-            const projectedTemplHeight = Math.floor(templ.rows * downsampleFactor);
-
-            if (projectedTemplWidth < minTemplateSize || projectedTemplHeight < minTemplateSize) {
-                workerLog('warn', '[Match] Template too small for downsampling, using original size', {
-                    originalSize: `${templ.cols}x${templ.rows}`,
-                    projectedSize: `${projectedTemplWidth}x${projectedTemplHeight}`,
-                    minRequired: minTemplateSize
-                });
-                downsampleFactor = 1.0;
-            }
-
-            if (downsampleFactor !== 1.0) {
-                let dSrc = new cv.Mat(), dTempl = new cv.Mat();
-                cv.resize(src, dSrc, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
-
-                if (!cacheHit) {
-                    cv.resize(templ, dTempl, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
-                } else {
-                    dTempl = templ.clone();
+    release() {
+        for (const mat of this.mats) {
+            try {
+                if (mat && !mat.isDeleted()) {
+                    mat.delete();
                 }
+            } catch (e) {
+                // Ignore errors during deletion (e.g. already deleted)
+            }
+        }
+        this.mats = [];
+    }
+}
 
-                src.delete();
-                if (!cacheHit) templ.delete();
-                src = dSrc;
-                templ = dTempl;
+// --- Caching ---
 
-                // 缓存降采样后的模板
-                if (!cacheHit) {
-                    templateCache.set(templateKey, {
-                        mat: templ.clone(),
+interface CachedTemplate {
+    mat: any;
+    width: number;
+    height: number;
+    timestamp: number;
+}
+
+class TemplateCache {
+    private cache = new Map<string, CachedTemplate>();
+    private maxSize: number;
+    private expireTime: number;
+
+    constructor(maxSize: number = 50, expireTime: number = 300000) {
+        this.maxSize = maxSize;
+        this.expireTime = expireTime;
+    }
+
+    get(key: string): CachedTemplate | undefined {
+        const item = this.cache.get(key);
+        if (item) {
+            item.timestamp = Date.now();
+            return item;
+        }
+        return undefined;
+    }
+
+    set(key: string, item: CachedTemplate) {
+        if (this.cache.size >= this.maxSize) {
+            this.clean();
+        }
+        this.cache.set(key, item);
+    }
+
+    clean() {
+        const now = Date.now();
+        // Remove expired items
+        for (const [key, val] of this.cache.entries()) {
+            if (now - val.timestamp > this.expireTime) {
+                this.delete(key);
+            }
+        }
+
+        // If still too big, remove LRU
+        if (this.cache.size >= this.maxSize) {
+            let oldestKey: string | null = null;
+            let oldestTime = Infinity;
+
+            for (const [key, val] of this.cache.entries()) {
+                if (val.timestamp < oldestTime) {
+                    oldestTime = val.timestamp;
+                    oldestKey = key;
+                }
+            }
+
+            if (oldestKey) {
+                this.delete(oldestKey);
+            }
+        }
+    }
+
+    delete(key: string) {
+        const item = this.cache.get(key);
+        if (item) {
+            try {
+                if (item.mat && !item.mat.isDeleted()) item.mat.delete();
+            } catch (e) {}
+            this.cache.delete(key);
+        }
+    }
+
+    clear() {
+        for (const key of this.cache.keys()) {
+            this.delete(key);
+        }
+    }
+
+    get size() {
+        return this.cache.size;
+    }
+}
+
+// --- Logic ---
+
+class CVWorkerController {
+    private templateCache = new TemplateCache(50);
+
+    private stats = {
+        matchCount: 0,
+        totalTime: 0
+    };
+
+    constructor() {
+        // Bind message handler
+        self.onmessage = this.handleMessage.bind(this);
+    }
+
+    private log(level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: any) {
+        self.postMessage({ type: 'WORKER_LOG', level, message, data });
+    }
+
+    // Wait for OpenCV initialization
+    private async waitForCV(): Promise<void> {
+        if (typeof cv !== 'undefined' && cv.Mat) return;
+
+        return new Promise((resolve) => {
+            if (typeof cv !== 'undefined' && cv.onRuntimeInitialized) {
+                resolve();
+            } else {
+                const check = () => {
+                    if (typeof cv !== 'undefined' && cv.Mat) {
+                        resolve();
+                    } else {
+                        setTimeout(check, 10);
+                    }
+                };
+
+                if (typeof (self as any).cv === 'undefined') {
+                     (self as any).Module = {
+                        onRuntimeInitialized: resolve
+                    };
+                } else {
+                    check();
+                }
+            }
+        });
+    }
+
+    private async handleMessage(e: MessageEvent) {
+        const { id, type, payload } = e.data;
+
+        try {
+            await this.waitForCV();
+
+            if (type === 'INIT') {
+                self.postMessage({ type: 'INIT_DONE' });
+            }
+            else if (type === 'MATCH') {
+                const result = this.handleSingleMatch(payload);
+                self.postMessage({ id, type: 'MATCH_RESULT', result });
+            }
+            else if (type === 'BATCH_MATCH') {
+                const result = this.handleBatchMatch(payload);
+                self.postMessage({ id, type: 'BATCH_MATCH_RESULT', result });
+            }
+            else if (type === 'CLEAR_CACHE') {
+                this.templateCache.clear();
+                self.postMessage({ type: 'CACHE_CLEARED' });
+            }
+            else if (type === 'GET_STATS') {
+                self.postMessage({
+                    type: 'STATS',
+                    stats: {
+                        cacheSize: this.templateCache.size,
+                        matchCount: this.stats.matchCount,
+                        averageTime: this.stats.matchCount > 0 ? this.stats.totalTime / this.stats.matchCount : 0,
+                        totalTime: this.stats.totalTime
+                    }
+                });
+            }
+        } catch (err: any) {
+            this.log('error', 'Worker Error', err.message);
+            self.postMessage({ id, type: 'ERROR', error: err.message });
+        }
+    }
+
+    private handleSingleMatch(payload: any): MatchResult {
+        const startTime = performance.now();
+        const { image, template, config } = payload;
+
+        return MatScope.run(scope => {
+            // 1. Process Source Image
+            const srcProc = this.preprocessImage(image, config, scope);
+
+            // 2. Process Template
+            const templateKey = this.generateTemplateKey(template, config);
+            let templMat: any;
+            let cacheHit = false;
+
+            const cached = this.templateCache.get(templateKey);
+            if (cached) {
+                templMat = cached.mat;
+                cacheHit = true;
+            } else {
+                const templProc = this.preprocessImage(template, config, scope);
+
+                // Clone for cache
+                const toCache = templProc.mat.clone();
+                this.templateCache.set(templateKey, {
+                    mat: toCache,
+                    width: template.width,
+                    height: template.height,
+                    timestamp: Date.now()
+                });
+
+                templMat = templProc.mat;
+            }
+
+            // 3. Match
+            const result = this.runMatching(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
+
+            const duration = performance.now() - startTime;
+            this.stats.matchCount++;
+            this.stats.totalTime += duration;
+
+            return {
+                ...result,
+                cacheHit,
+                performance: {
+                    duration: Math.round(duration * 100) / 100,
+                    matchCount: this.stats.matchCount,
+                    averageTime: Math.round((this.stats.totalTime / this.stats.matchCount) * 100) / 100
+                },
+                templateWidth: template.width,
+                templateHeight: template.height
+            };
+        });
+    }
+
+    private handleBatchMatch(payload: any): any {
+        const startTime = performance.now();
+        const { image, templates, config } = payload;
+        const results: BatchMatchResultItem[] = [];
+
+        MatScope.run(scope => {
+            const srcProc = this.preprocessImage(image, config, scope);
+
+            for (let i = 0; i < templates.length; i++) {
+                const template = templates[i];
+                const itemStartTime = performance.now();
+
+                const templateKey = this.generateTemplateKey(template, config);
+                let templMat: any;
+                let cacheHit = false;
+
+                const cached = this.templateCache.get(templateKey);
+                if (cached) {
+                    templMat = cached.mat;
+                    cacheHit = true;
+                } else {
+                    const templProc = this.preprocessImage(template, config, scope);
+                    const toCache = templProc.mat.clone();
+                    this.templateCache.set(templateKey, {
+                        mat: toCache,
                         width: template.width,
                         height: template.height,
                         timestamp: Date.now()
                     });
-                }
-            }
-
-            // 2. [新增] 灰度转换 - 减少75%数据量，加速匹配
-            const useGrayscale = config.grayscale !== false;
-            let srcGray: any = null;
-            let templGray: any = null;
-            if (useGrayscale) {
-                srcGray = toGrayscale(src);
-                templGray = toGrayscale(templ);
-            }
-            const matchSrc = useGrayscale ? srcGray : src;
-            const matchTempl = useGrayscale ? templGray : templ;
-
-            // 3. ROI或全屏匹配
-            let bestRes: any;
-            if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
-                // ROI匹配：尝试所有ROI区域
-                workerLog('debug', '[ROI] Processing regions', {
-                    regionsCount: config.roi.regions.length,
-                    downsampleFactor,
-                    srcSize: `${matchSrc.cols}x${matchSrc.rows}`,
-                    templSize: `${matchTempl.cols}x${matchTempl.rows}`
-                });
-
-                bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
-                let validRoiFound = false;
-
-                for (const roi of config.roi.regions) {
-                    // 关键修复: ROI坐标需要根据降采样因子缩放
-                    const scaledRoi = {
-                        x: Math.floor(roi.x * downsampleFactor),
-                        y: Math.floor(roi.y * downsampleFactor),
-                        w: Math.floor(roi.w * downsampleFactor),
-                        h: Math.floor(roi.h * downsampleFactor)
-                    };
-
-                    workerLog('debug', '[ROI] Processing region', {
-                        original: { x: roi.x, y: roi.y, w: roi.w, h: roi.h },
-                        scaled: scaledRoi,
-                        templSize: { w: matchTempl.cols, h: matchTempl.rows }
-                    });
-
-                    // 验证ROI边界，并确保ROI大于模板
-                    const templWidth = matchTempl.cols;
-                    const templHeight = matchTempl.rows;
-
-                    // 边界检查
-                    const boundsCheck = {
-                        xNegative: scaledRoi.x < 0,
-                        yNegative: scaledRoi.y < 0,
-                        xOverflow: scaledRoi.x + scaledRoi.w > matchSrc.cols,
-                        yOverflow: scaledRoi.y + scaledRoi.h > matchSrc.rows,
-                        wTooSmall: scaledRoi.w <= templWidth,
-                        hTooSmall: scaledRoi.h <= templHeight
-                    };
-
-                    const isInvalid = boundsCheck.xNegative || boundsCheck.yNegative ||
-                        boundsCheck.xOverflow || boundsCheck.yOverflow ||
-                        boundsCheck.wTooSmall || boundsCheck.hTooSmall;
-
-                    if (isInvalid) {
-                        workerLog('warn', '[ROI] Invalid region, skipping', boundsCheck);
-                        continue;
-                    }
-
-                    validRoiFound = true;
-                    workerLog('debug', '[ROI] Valid region, performing match...');
-                    const roiResult = matchWithROI(matchSrc, matchTempl, scaledRoi, config);
-                    workerLog('debug', '[ROI] Match result', {
-                        score: roiResult.score?.toFixed(4),
-                        x: roiResult.x,
-                        y: roiResult.y
-                    });
-
-                    if (roiResult.score > bestRes.score) {
-                        bestRes = roiResult;
-                    }
-
-                    // 早期终止：如果在ROI中找到高置信度匹配
-                    if (config.earlyTermination && roiResult.score >= 0.95) {
-                        break;
-                    }
+                    templMat = templProc.mat;
                 }
 
-                // 如果没有有效的ROI，回退到全屏匹配
-                if (!validRoiFound) {
-                    workerLog('warn', '[ROI] No valid region found, falling back to full-screen match');
-                    bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
-                    bestRes.usedROI = false;
-                }
-            } else {
-                // 全屏匹配
-                bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
-                bestRes.usedROI = false;
-            }
+                let matchRes: any;
 
-            // 清理灰度图
-            if (srcGray) srcGray.delete();
-            if (templGray) templGray.delete();
-
-            src.delete();
-            if (!cacheHit) templ.delete();
-
-            const factor = 1.0 / downsampleFactor;
-            const duration = performance.now() - startTime;
-
-            // 更新性能统计
-            matchCount++;
-            totalTime += duration;
-
-            self.postMessage({
-                id,
-                type: 'MATCH_RESULT',
-                result: {
-                    score: bestRes.score,
-                    x: bestRes.x * factor,
-                    y: bestRes.y * factor,
-                    bestScale: bestRes.scale,
-                    usedROI: bestRes.usedROI,
-                    adaptiveScaling: bestRes.adaptiveScaling,
-                    cacheHit,
-                    performance: {
-                        duration: Math.round(duration * 100) / 100,
-                        matchCount,
-                        averageTime: Math.round((totalTime / matchCount) * 100) / 100
-                    },
-                    templateWidth: image.width,
-                    templateHeight: image.height
-                }
-            });
-        }
-        // 批量匹配 - 多模板共用一个源图像，大幅减少开销
-        else if (type === 'BATCH_MATCH') {
-            const startTime = performance.now();
-            const { image, templates, config } = payload;
-            const results: any[] = [];
-
-            // 只创建一次源图像
-            let src = cv.matFromImageData(image);
-
-            // 降采样
-            const downsampleFactor = config.downsample || 0.33;
-            if (downsampleFactor !== 1.0) {
-                let dSrc = new cv.Mat();
-                cv.resize(src, dSrc, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
-                src.delete();
-                src = dSrc;
-            }
-
-            // 转灰度 (加速匹配)
-            const useGrayscale = config.grayscale !== false;
-            let srcGray: any = null;
-            if (useGrayscale) {
-                srcGray = toGrayscale(src);
-            }
-
-            const matchSrc = useGrayscale ? srcGray : src;
-            const threshold = config.threshold || 0.8;
-
-            // 顺序匹配所有模板
-            for (let i = 0; i < templates.length; i++) {
-                const template = templates[i];
-                const templateStartTime = performance.now();
-
-                // 获取或创建灰度模板
-                const templateKey = `gray_${template.width}x${template.height}_${downsampleFactor}`;
-                let templ: any;
-                let cacheHit = false;
-
-                if (grayTemplateCache.has(template.name || templateKey)) {
-                    templ = grayTemplateCache.get(template.name || templateKey)!.mat;
-                    cacheHit = true;
-                } else {
-                    templ = cv.matFromImageData(template.data);
-
-                    // 降采样模板
-                    if (downsampleFactor !== 1.0) {
-                        let dTempl = new cv.Mat();
-                        cv.resize(templ, dTempl, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
-                        templ.delete();
-                        templ = dTempl;
-                    }
-
-                    // 转灰度
-                    if (useGrayscale) {
-                        const grayTempl = toGrayscale(templ);
-                        templ.delete();
-                        templ = grayTempl;
-                    }
-
-                    // 缓存
-                    grayTemplateCache.set(template.name || templateKey, {
-                        mat: templ.clone(),
-                        timestamp: Date.now()
-                    });
-                }
-
-                // 匹配 - 优先使用模板级 ROI，其次全局 ROI，最后全屏
-                let matchResult: any;
-
-                // 1. 检查模板级 ROI (template.roi)
+                // Template-specific ROI
                 if (template.roi && template.roi.x !== undefined) {
-                    const scaledRoi = {
-                        x: Math.floor(template.roi.x * downsampleFactor),
-                        y: Math.floor(template.roi.y * downsampleFactor),
-                        w: Math.floor(template.roi.w * downsampleFactor),
-                        h: Math.floor(template.roi.h * downsampleFactor)
-                    };
-                    // 确保 ROI 在图像范围内且大于模板
-                    if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
-                        scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
-                        scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
-                        scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
-                        matchResult = matchWithROI(matchSrc, templ, scaledRoi, config);
+                    const sRoi = this.getScaledRoi(template.roi, srcProc.scaleFactor, srcProc.mat.size());
+                    if (sRoi) {
+                        matchRes = this.matchWithROI(srcProc.mat, templMat, sRoi, config, srcProc.scaleFactor, scope);
                     } else {
-                        // ROI 无效，回退到全屏
-                        matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                        matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
                     }
                 }
-                // 2. 检查全局 ROI (config.roi)
-                else if (config.roi && config.roi.enabled && config.roi.regions?.length > 0) {
-                    matchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
-                    for (const roi of config.roi.regions) {
-                        const scaledRoi = {
-                            x: Math.floor(roi.x * downsampleFactor),
-                            y: Math.floor(roi.y * downsampleFactor),
-                            w: Math.floor(roi.w * downsampleFactor),
-                            h: Math.floor(roi.h * downsampleFactor)
-                        };
-                        if (scaledRoi.x >= 0 && scaledRoi.y >= 0 &&
-                            scaledRoi.x + scaledRoi.w <= matchSrc.cols &&
-                            scaledRoi.y + scaledRoi.h <= matchSrc.rows &&
-                            scaledRoi.w > templ.cols && scaledRoi.h > templ.rows) {
-                            const roiResult = matchWithROI(matchSrc, templ, scaledRoi, config);
-                            if (roiResult.score > matchResult.score) {
-                                matchResult = roiResult;
-                            }
-                        }
-                    }
+                // Global ROI
+                else if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
+                     matchRes = this.runMatchingWithRegions(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
                 }
-                // 3. 全屏匹配
+                // Full screen
                 else {
-                    matchResult = optimizedMatchTemplate(matchSrc, templ, config);
+                    matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
                 }
 
-                const templateDuration = performance.now() - templateStartTime;
+                const itemDuration = performance.now() - itemStartTime;
 
-                const factor = 1.0 / downsampleFactor;
                 results.push({
                     name: template.name || `template_${i}`,
-                    score: matchResult.score,
-                    x: matchResult.x * factor,
-                    y: matchResult.y * factor,
-                    matched: matchResult.score >= threshold,
-                    duration: Math.round(templateDuration * 100) / 100,
+                    score: matchRes.score,
+                    x: matchRes.x,
+                    y: matchRes.y,
+                    matched: matchRes.score >= (config.threshold || 0.8),
+                    duration: Math.round(itemDuration * 100) / 100,
                     cacheHit,
-                    usedROI: matchResult.usedROI || false
+                    usedROI: matchRes.usedROI
                 });
 
-                if (!cacheHit) {
-                    templ.delete();
-                }
-
-                // 早期退出：如果配置了 earlyExit 且找到匹配
-                if (config.earlyExit && matchResult.score >= threshold) {
+                if (config.earlyExit && matchRes.score >= (config.threshold || 0.8)) {
                     break;
                 }
             }
+        });
 
-            // 清理
-            if (srcGray) srcGray.delete();
-            src.delete();
+        const totalDuration = performance.now() - startTime;
+        this.stats.matchCount += templates.length;
+        this.stats.totalTime += totalDuration;
 
-            const totalDuration = performance.now() - startTime;
-            matchCount += templates.length;
-            totalTime += totalDuration;
-
-            self.postMessage({
-                id,
-                type: 'BATCH_MATCH_RESULT',
-                result: {
-                    results,
-                    totalDuration: Math.round(totalDuration * 100) / 100,
-                    templateCount: templates.length,
-                    matchedCount: results.filter(r => r.matched).length
-                }
-            });
-        }
-        else if (type === 'CLEAR_CACHE') {
-            // 清理缓存
-            for (const [key, value] of templateCache.entries()) {
-                value.mat.delete();
-            }
-            templateCache.clear();
-            // 清理灰度缓存
-            for (const [key, value] of grayTemplateCache.entries()) {
-                value.mat.delete();
-            }
-            grayTemplateCache.clear();
-            self.postMessage({ type: 'CACHE_CLEARED' });
-        }
-        else if (type === 'GET_STATS') {
-            // 获取统计信息
-            self.postMessage({
-                type: 'STATS',
-                stats: {
-                    cacheSize: templateCache.size,
-                    grayCacheSize: grayTemplateCache.size,
-                    matchCount,
-                    averageTime: matchCount > 0 ? Math.round((totalTime / matchCount) * 100) / 100 : 0,
-                    totalTime: Math.round(totalTime * 100) / 100
-                }
-            });
-        }
-    } catch (err: any) {
-        self.postMessage({ id, type: 'ERROR', error: err.message });
+        return {
+            results,
+            totalDuration: Math.round(totalDuration * 100) / 100,
+            templateCount: templates.length,
+            matchedCount: results.filter(r => r.matched).length
+        };
     }
-};
+
+    private preprocessImage(rawImage: any, config: MatchConfig, scope: MatScope): ProcessedImage {
+        let mat: any;
+
+        if (rawImage instanceof ImageData || (rawImage.data && rawImage.width && rawImage.height)) {
+            mat = scope.add(cv.matFromImageData(rawImage));
+        } else {
+            throw new Error("Invalid image data");
+        }
+
+        let scale = 1.0;
+        let downsample = config.downsample || 1.0;
+
+        // Smart downsample check
+        if (downsample !== 1.0) {
+             const projectedW = Math.floor(mat.cols * downsample);
+             const projectedH = Math.floor(mat.rows * downsample);
+             if (projectedW < 16 || projectedH < 16) {
+                 downsample = 1.0;
+             }
+        }
+
+        if (downsample !== 1.0) {
+            let resized = scope.add(new cv.Mat());
+            let size = scope.add(new cv.Size());
+            cv.resize(mat, resized, size, downsample, downsample, cv.INTER_LINEAR);
+            mat = resized;
+            scale = downsample;
+        }
+
+        const useGrayscale = config.grayscale !== false;
+        if (useGrayscale) {
+            let gray = scope.add(new cv.Mat());
+            if (mat.channels() === 4) {
+                cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+            } else if (mat.channels() === 3) {
+                cv.cvtColor(mat, gray, cv.COLOR_RGB2GRAY);
+            } else {
+                gray = mat;
+            }
+            if (gray !== mat) {
+                 mat = gray;
+            }
+        }
+
+        return { mat, scaleFactor: scale, isGrayscale: useGrayscale };
+    }
+
+    private generateTemplateKey(template: any, config: MatchConfig): string {
+        const downsample = config.downsample || 1.0;
+        const gray = config.grayscale !== false ? 'gray' : 'color';
+        return `${template.width}x${template.height}_${downsample}_${gray}`;
+    }
+
+    private getScaledRoi(roi: Rect, scale: number, imageSize: any): Rect | null {
+        const sRoi = {
+            x: Math.floor(roi.x * scale),
+            y: Math.floor(roi.y * scale),
+            w: Math.floor(roi.w * scale),
+            h: Math.floor(roi.h * scale)
+        };
+
+        if (sRoi.x < 0) sRoi.x = 0;
+        if (sRoi.y < 0) sRoi.y = 0;
+
+        if (sRoi.x >= imageSize.width || sRoi.y >= imageSize.height || sRoi.w <= 0 || sRoi.h <= 0) {
+            return null;
+        }
+
+        if (sRoi.x + sRoi.w > imageSize.width) sRoi.w = imageSize.width - sRoi.x;
+        if (sRoi.y + sRoi.h > imageSize.height) sRoi.h = imageSize.height - sRoi.y;
+
+        return sRoi;
+    }
+
+    private runMatching(src: any, templ: any, config: MatchConfig, scale: number, scope: MatScope): MatchResult {
+        let bestRes: MatchResult = {
+            score: -1, x: 0, y: 0, scale: 1.0, usedROI: false, adaptiveScaling: false
+        };
+
+        if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
+            bestRes = this.runMatchingWithRegions(src, templ, config, scale, scope);
+        } else {
+            bestRes = this.optimizedMatchTemplate(src, templ, config, scale, scope);
+        }
+
+        const invScale = 1.0 / scale;
+        return {
+            ...bestRes,
+            x: bestRes.x * invScale,
+            y: bestRes.y * invScale
+        };
+    }
+
+    private runMatchingWithRegions(src: any, templ: any, config: MatchConfig, currentScale: number, scope: MatScope): MatchResult {
+        let bestRes: MatchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false, adaptiveScaling: false };
+        let validRegionFound = false;
+
+        for (const roi of config.roi!.regions!) {
+            const sRoi = this.getScaledRoi(roi, currentScale, src.size());
+
+            if (!sRoi) continue;
+
+            if (sRoi.w < templ.cols || sRoi.h < templ.rows) continue;
+
+            validRegionFound = true;
+            const res = this.matchWithROI(src, templ, sRoi, config, currentScale, scope);
+
+            if (res.score > bestRes.score) {
+                bestRes = res;
+            }
+
+            if (config.earlyTermination && bestRes.score >= 0.95) break;
+        }
+
+        if (!validRegionFound) {
+            bestRes = this.optimizedMatchTemplate(src, templ, config, currentScale, scope);
+            bestRes.usedROI = false;
+        }
+
+        return bestRes;
+    }
+
+    private matchWithROI(src: any, templ: any, roi: Rect, config: MatchConfig, currentScale: number, scope: MatScope): MatchResult {
+        const roiRect = scope.add(new cv.Rect(roi.x, roi.y, roi.w, roi.h));
+        const roiMat = scope.add(src.roi(roiRect));
+
+        const res = this.optimizedMatchTemplate(roiMat, templ, config, currentScale, scope);
+
+        if (res.score > 0) {
+            res.x += roi.x;
+            res.y += roi.y;
+        }
+        res.usedROI = true;
+        return res;
+    }
+
+    private optimizedMatchTemplate(src: any, templ: any, config: MatchConfig, currentScale: number, scope: MatScope): MatchResult {
+        let bestRes = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false, usedROI: false };
+
+        const method = config.matchingMethod === 'TM_SQDIFF_NORMED' ? cv.TM_SQDIFF_NORMED :
+                       config.matchingMethod === 'TM_CCORR_NORMED' ? cv.TM_CCORR_NORMED :
+                       cv.TM_CCOEFF_NORMED;
+
+        const match = (source: any, template: any) => {
+            if (source.cols < template.cols || source.rows < template.rows) return { score: -1, x:0, y:0 };
+
+            const dst = scope.add(new cv.Mat());
+            const mask = scope.add(new cv.Mat());
+
+            cv.matchTemplate(source, template, dst, method, mask);
+            const res = cv.minMaxLoc(dst, mask);
+
+            const score = method === cv.TM_SQDIFF_NORMED ? 1 - res.minVal : res.maxVal;
+            return { score, x: res.maxLoc.x, y: res.maxLoc.y };
+        };
+
+        const scales = config.scales || [1.0];
+
+        for (const s of scales) {
+             let sTempl = templ;
+             if (s !== 1.0) {
+                 sTempl = scope.add(new cv.Mat());
+                 let size = scope.add(new cv.Size());
+                 cv.resize(templ, sTempl, size, s, s, cv.INTER_LINEAR);
+             }
+
+             const res = match(src, sTempl);
+
+             if (res.score > bestRes.score) {
+                 bestRes = { ...res, scale: s, adaptiveScaling: false, usedROI: false };
+             }
+
+             if (config.earlyTermination && bestRes.score >= (config.threshold || 0.8) && bestRes.score > 0.95) {
+                 break;
+             }
+        }
+
+        return bestRes;
+    }
+}
+
+const controller = new CVWorkerController();
