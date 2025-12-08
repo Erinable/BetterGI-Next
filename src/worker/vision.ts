@@ -268,39 +268,44 @@ class CVWorkerController {
         }
     }
 
+    private getTemplateMat(
+        template: any,
+        config: MatchConfig,
+        scope: MatScope
+    ): { mat: any; isCached: boolean } {
+        const templateKey = this.generateTemplateKey(template, config);
+        const cached = this.templateCache.get(templateKey);
+
+        if (cached) {
+            return { mat: cached.mat, isCached: true };
+        }
+
+        // 未命中：处理并缓存
+        // 注意：preprocessImage 将 mat 加入了 scope，意味着当前 scope 结束时它会被销毁
+        const templProc = this.preprocessImage(template, config, scope);
+
+        // 必须 clone 一份持久化的存入缓存，不受 scope 管理
+        const toCache = templProc.mat.clone();
+
+        this.templateCache.set(templateKey, {
+            mat: toCache,
+            width: template.width,
+            height: template.height,
+            timestamp: Date.now()
+        });
+
+        return { mat: templProc.mat, isCached: false };
+    }
+
     private handleSingleMatch(payload: any): MatchResult {
         const startTime = performance.now();
         const { image, template, config } = payload;
 
         return MatScope.run(scope => {
-            // 1. Process Source Image
             const srcProc = this.preprocessImage(image, config, scope);
+            // 使用提取的帮助函数
+            const { mat: templMat, isCached } = this.getTemplateMat(template, config, scope);
 
-            // 2. Process Template
-            const templateKey = this.generateTemplateKey(template, config);
-            let templMat: any;
-            let cacheHit = false;
-
-            const cached = this.templateCache.get(templateKey);
-            if (cached) {
-                templMat = cached.mat;
-                cacheHit = true;
-            } else {
-                const templProc = this.preprocessImage(template, config, scope);
-
-                // Clone for cache
-                const toCache = templProc.mat.clone();
-                this.templateCache.set(templateKey, {
-                    mat: toCache,
-                    width: template.width,
-                    height: template.height,
-                    timestamp: Date.now()
-                });
-
-                templMat = templProc.mat;
-            }
-
-            // 3. Match
             const result = this.runMatching(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
 
             const duration = performance.now() - startTime;
@@ -309,7 +314,7 @@ class CVWorkerController {
 
             return {
                 ...result,
-                cacheHit,
+                cacheHit: isCached, // 使用返回的状态
                 performance: {
                     duration: Math.round(duration * 100) / 100,
                     matchCount: this.stats.matchCount,
@@ -321,77 +326,62 @@ class CVWorkerController {
         });
     }
 
+    // 【优化 1】嵌套 Scope 解决批量匹配内存堆积
     private handleBatchMatch(payload: any): any {
         const startTime = performance.now();
         const { image, templates, config } = payload;
         const results: BatchMatchResultItem[] = [];
 
-        MatScope.run(scope => {
-            const srcProc = this.preprocessImage(image, config, scope);
+        // 外层 Scope：只管理 Source Image，因为它在整个批量过程中都需要
+        MatScope.run(srcScope => {
+            const srcProc = this.preprocessImage(image, config, srcScope);
 
             for (let i = 0; i < templates.length; i++) {
                 const template = templates[i];
-                const itemStartTime = performance.now();
 
-                const templateKey = this.generateTemplateKey(template, config);
-                let templMat: any;
-                let cacheHit = false;
+                // 内层 Scope：管理单个模板匹配产生的临时内存 (Resized templates, masks, dsts)
+                // 每次循环结束，立即释放这些内存
+                MatScope.run(itemScope => {
+                    const itemStartTime = performance.now();
+                    const { mat: templMat, isCached } = this.getTemplateMat(template, config, itemScope);
 
-                const cached = this.templateCache.get(templateKey);
-                if (cached) {
-                    templMat = cached.mat;
-                    cacheHit = true;
-                } else {
-                    const templProc = this.preprocessImage(template, config, scope);
-                    const toCache = templProc.mat.clone();
-                    this.templateCache.set(templateKey, {
-                        mat: toCache,
-                        width: template.width,
-                        height: template.height,
-                        timestamp: Date.now()
-                    });
-                    templMat = templProc.mat;
-                }
+                    let matchRes: any;
 
-                let matchRes: any;
-
-                // Template-specific ROI
-                if (template.roi && template.roi.x !== undefined) {
-                    const sRoi = this.getScaledRoi(template.roi, srcProc.scaleFactor, srcProc.mat.size());
-                    if (sRoi) {
-                        matchRes = this.matchWithROI(srcProc.mat, templMat, sRoi, config, srcProc.scaleFactor, scope);
+                    // 这里的逻辑保持不变，但传入的是 itemScope
+                    if (template.roi && template.roi.x !== undefined) {
+                        const sRoi = this.getScaledRoi(template.roi, srcProc.scaleFactor, srcProc.mat.size());
+                        if (sRoi) {
+                            matchRes = this.matchWithROI(srcProc.mat, templMat, sRoi, config, srcProc.scaleFactor, itemScope);
+                        } else {
+                            matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
+                        }
+                    } else if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
+                        matchRes = this.runMatchingWithRegions(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
                     } else {
-                        matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
+                        matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
                     }
-                }
-                // Global ROI
-                else if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
-                     matchRes = this.runMatchingWithRegions(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
-                }
-                // Full screen
-                else {
-                    matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
-                }
 
-                const itemDuration = performance.now() - itemStartTime;
+                    results.push({
+                        name: template.name || `template_${i}`,
+                        score: matchRes.score,
+                        x: matchRes.x,
+                        y: matchRes.y,
+                        matched: matchRes.score >= (config.threshold || 0.8),
+                        duration: Math.round((performance.now() - itemStartTime) * 100) / 100,
+                        cacheHit: isCached,
+                        usedROI: matchRes.usedROI
+                    });
+                }); // itemScope 结束，单个模板的临时内存被回收
 
-                results.push({
-                    name: template.name || `template_${i}`,
-                    score: matchRes.score,
-                    x: matchRes.x,
-                    y: matchRes.y,
-                    matched: matchRes.score >= (config.threshold || 0.8),
-                    duration: Math.round(itemDuration * 100) / 100,
-                    cacheHit,
-                    usedROI: matchRes.usedROI
-                });
-
-                if (config.earlyExit && matchRes.score >= (config.threshold || 0.8)) {
+                // Early exit 逻辑 (注意：break 会跳出 for 循环，srcScope 正常在最后释放)
+                const lastResult = results[results.length - 1];
+                if (config.earlyExit && lastResult.matched) {
                     break;
                 }
             }
-        });
+        }); // srcScope 结束，源图像被回收
 
+        // ... 统计代码 ...
         const totalDuration = performance.now() - startTime;
         this.stats.matchCount += templates.length;
         this.stats.totalTime += totalDuration;
@@ -540,6 +530,7 @@ class CVWorkerController {
         return res;
     }
 
+    // 【优化 2】复用 Dst 和 Mask，避免循环内分配
     private optimizedMatchTemplate(src: any, templ: any, config: MatchConfig, currentScale: number, scope: MatScope): MatchResult {
         let bestRes = { score: -1, x: 0, y: 0, scale: 1.0, adaptiveScaling: false, usedROI: false };
 
@@ -547,35 +538,38 @@ class CVWorkerController {
                        config.matchingMethod === 'TM_CCORR_NORMED' ? cv.TM_CCORR_NORMED :
                        cv.TM_CCOEFF_NORMED;
 
-        const match = (source: any, template: any) => {
-            if (source.cols < template.cols || source.rows < template.rows) return { score: -1, x:0, y:0 };
-
-            const dst = scope.add(new cv.Mat());
-            const mask = scope.add(new cv.Mat());
-
-            cv.matchTemplate(source, template, dst, method, mask);
-            const res = cv.minMaxLoc(dst, mask);
-
-            const score = method === cv.TM_SQDIFF_NORMED ? 1 - res.minVal : res.maxVal;
-            return { score, x: res.maxLoc.x, y: res.maxLoc.y };
-        };
+        // 在循环外创建 Mat，复用内存
+        const dst = scope.add(new cv.Mat());
+        const mask = scope.add(new cv.Mat());
 
         const scales = config.scales || [1.0];
 
         for (const s of scales) {
              let sTempl = templ;
+             // 只有当需要 resize 时才创建新的 Mat
              if (s !== 1.0) {
                  sTempl = scope.add(new cv.Mat());
-                 let size = scope.add(new cv.Size());
+                 // 使用 null 让 OpenCV 自动计算大小，或者复用 Size 对象
+                 const size = scope.add(new cv.Size());
                  cv.resize(templ, sTempl, size, s, s, cv.INTER_LINEAR);
              }
 
-             const res = match(src, sTempl);
-
-             if (res.score > bestRes.score) {
-                 bestRes = { ...res, scale: s, adaptiveScaling: false, usedROI: false };
+             // 边界检查：如果模板比源图大，直接跳过
+             if (src.cols < sTempl.cols || src.rows < sTempl.rows) {
+                 continue;
              }
 
+             // 执行匹配，复用 dst 和 mask
+             cv.matchTemplate(src, sTempl, dst, method, mask);
+             const res = cv.minMaxLoc(dst, mask);
+
+             const score = method === cv.TM_SQDIFF_NORMED ? 1 - res.minVal : res.maxVal;
+
+             if (score > bestRes.score) {
+                 bestRes = { score, x: res.maxLoc.x, y: res.maxLoc.y, scale: s, adaptiveScaling: false, usedROI: false };
+             }
+
+             // Early termination
              if (config.earlyTermination && bestRes.score >= (config.threshold || 0.8) && bestRes.score > 0.95) {
                  break;
              }
