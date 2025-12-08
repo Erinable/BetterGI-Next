@@ -12,6 +12,11 @@ const MAX_CACHE_SIZE = 50;
 let matchCount = 0;
 let totalTime = 0;
 
+// Worker 日志帮助函数 - 发送到主线程的 logger
+function workerLog(level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: any) {
+    self.postMessage({ type: 'WORKER_LOG', level, message, data });
+}
+
 // 工具函数：生成模板键
 function generateTemplateKey(template: ImageData, config: any): string {
     return `${template.width}x${template.height}_${config.downsample || 1.0}_${JSON.stringify(config.scales || [1.0])}`;
@@ -180,8 +185,23 @@ self.onmessage = (e: MessageEvent) => {
             let src = cv.matFromImageData(image);
             let templ = cachedTemplate ? cachedTemplate.mat : cv.matFromImageData(template);
 
-            // 1. 降采样 - 提高默认降采样率
+            // 1. 降采样 - 智能处理小模板
             let downsampleFactor = config.downsample || 0.33;
+
+            // 智能检测：如果模板降采样后太小（<16x16），跳过降采样
+            const minTemplateSize = 16;
+            const projectedTemplWidth = Math.floor(templ.cols * downsampleFactor);
+            const projectedTemplHeight = Math.floor(templ.rows * downsampleFactor);
+
+            if (projectedTemplWidth < minTemplateSize || projectedTemplHeight < minTemplateSize) {
+                workerLog('warn', '[Match] Template too small for downsampling, using original size', {
+                    originalSize: `${templ.cols}x${templ.rows}`,
+                    projectedSize: `${projectedTemplWidth}x${projectedTemplHeight}`,
+                    minRequired: minTemplateSize
+                });
+                downsampleFactor = 1.0;
+            }
+
             if (downsampleFactor !== 1.0) {
                 let dSrc = new cv.Mat(), dTempl = new cv.Mat();
                 cv.resize(src, dSrc, new cv.Size(), downsampleFactor, downsampleFactor, cv.INTER_LINEAR);
@@ -223,6 +243,13 @@ self.onmessage = (e: MessageEvent) => {
             let bestRes: any;
             if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
                 // ROI匹配：尝试所有ROI区域
+                workerLog('debug', '[ROI] Processing regions', {
+                    regionsCount: config.roi.regions.length,
+                    downsampleFactor,
+                    srcSize: `${matchSrc.cols}x${matchSrc.rows}`,
+                    templSize: `${matchTempl.cols}x${matchTempl.rows}`
+                });
+
                 bestRes = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false };
                 let validRoiFound = false;
 
@@ -235,19 +262,44 @@ self.onmessage = (e: MessageEvent) => {
                         h: Math.floor(roi.h * downsampleFactor)
                     };
 
+                    workerLog('debug', '[ROI] Processing region', {
+                        original: { x: roi.x, y: roi.y, w: roi.w, h: roi.h },
+                        scaled: scaledRoi,
+                        templSize: { w: matchTempl.cols, h: matchTempl.rows }
+                    });
+
                     // 验证ROI边界，并确保ROI大于模板
                     const templWidth = matchTempl.cols;
                     const templHeight = matchTempl.rows;
-                    if (scaledRoi.x < 0 || scaledRoi.y < 0 ||
-                        scaledRoi.x + scaledRoi.w > matchSrc.cols ||
-                        scaledRoi.y + scaledRoi.h > matchSrc.rows ||
-                        scaledRoi.w <= templWidth || scaledRoi.h <= templHeight) {
-                        console.warn('ROI invalid (out of bounds or smaller than template), skipping:', scaledRoi);
+
+                    // 边界检查
+                    const boundsCheck = {
+                        xNegative: scaledRoi.x < 0,
+                        yNegative: scaledRoi.y < 0,
+                        xOverflow: scaledRoi.x + scaledRoi.w > matchSrc.cols,
+                        yOverflow: scaledRoi.y + scaledRoi.h > matchSrc.rows,
+                        wTooSmall: scaledRoi.w <= templWidth,
+                        hTooSmall: scaledRoi.h <= templHeight
+                    };
+
+                    const isInvalid = boundsCheck.xNegative || boundsCheck.yNegative ||
+                        boundsCheck.xOverflow || boundsCheck.yOverflow ||
+                        boundsCheck.wTooSmall || boundsCheck.hTooSmall;
+
+                    if (isInvalid) {
+                        workerLog('warn', '[ROI] Invalid region, skipping', boundsCheck);
                         continue;
                     }
 
                     validRoiFound = true;
+                    workerLog('debug', '[ROI] Valid region, performing match...');
                     const roiResult = matchWithROI(matchSrc, matchTempl, scaledRoi, config);
+                    workerLog('debug', '[ROI] Match result', {
+                        score: roiResult.score?.toFixed(4),
+                        x: roiResult.x,
+                        y: roiResult.y
+                    });
+
                     if (roiResult.score > bestRes.score) {
                         bestRes = roiResult;
                     }
@@ -260,7 +312,7 @@ self.onmessage = (e: MessageEvent) => {
 
                 // 如果没有有效的ROI，回退到全屏匹配
                 if (!validRoiFound) {
-                    console.warn('No valid ROI found, falling back to full-screen match');
+                    workerLog('warn', '[ROI] No valid region found, falling back to full-screen match');
                     bestRes = optimizedMatchTemplate(matchSrc, matchTempl, config);
                     bestRes.usedROI = false;
                 }

@@ -403,7 +403,12 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCapt
     const [performancePanelPos, setPerformancePanelPos] = useState({ x: 100, y: 100 });
 
     // Log Level
-    const [logLevel, setLogLevel] = useState(logger.getConfig().level);
+    const [logLevel, setLogLevel] = useState(() => {
+        // Load from config and apply to logger
+        const savedLevel = configManager.get('logLevel');
+        logger.updateConfig({ level: savedLevel });
+        return savedLevel;
+    });
 
     // Task List
     const [registeredTasks, setRegisteredTasks] = useState<string[]>([]);
@@ -464,7 +469,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCapt
     const confirmAddRoi = () => {
         if (newRoiData) {
             // 获取坐标转换信息: 将屏幕坐标转换为游戏坐标
-            const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+            const displayInfo = (getRealWindow() as any).BetterGi?.vision?.getDisplayInfo();
 
             if (displayInfo) {
                 // 屏幕坐标 → 游戏坐标
@@ -540,11 +545,11 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCapt
 
                             <div class={`row ${pendingConfig.downsample !== undefined ? 'config-changed' : ''}`}>
                                 <label>预览精度</label>
-                                <select value={downsample} onChange={(e: any) => handleConfigChange('downsample', parseFloat(e.target.value))}>
+                                <select value={String(downsample)} onChange={(e: any) => handleConfigChange('downsample', parseFloat(e.target.value))}>
                                     <option value="0.33">极速 (0.33x)</option>
                                     <option value="0.5">标准 (0.5x)</option>
                                     <option value="0.66">均衡 (0.66x)</option>
-                                    <option value="1.0">原画 (1.0x)</option>
+                                    <option value="1">原画 (1.0x)</option>
                                 </select>
                             </div>
 
@@ -732,15 +737,15 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCapt
                                         buildDate: new Date().toISOString().slice(0, 10),
                                         userAgent: navigator.userAgent,
                                         screenSize: `${window.innerWidth}x${window.innerHeight}`,
-                                        videoInfo: window.BetterGi?.vision.getDisplayInfo(),
-                                        config: configManager.getAll(),
-                                        performance: window.BetterGi?.engine?.vision?.getPerformanceMetrics?.() || 'N/A'
+                                        videoInfo: (getRealWindow() as any).BetterGi?.vision?.getDisplayInfo(),
+                                        vision: (getRealWindow() as any).BetterGi?.vision || 'N/A',
+                                        performance: (getRealWindow() as any).BetterGi?.engine?.vision?.getPerformanceMetrics?.() || 'N/A'
                                     };
                                     const diagStr = JSON.stringify(diagInfo, null, 2);
                                     navigator.clipboard?.writeText(diagStr).then(() => {
                                         alert('📋 诊断信息已复制到剪贴板');
                                     }).catch(() => {
-                                        console.log('Diagnostic Info:', diagStr);
+                                        logger.info('system', 'Diagnostic Info', diagStr);
                                         alert('诊断信息已输出到控制台 (F12)');
                                     });
                                 }}>
@@ -756,6 +761,7 @@ export function App({ initialPos, onPosChange, onClose, onCrop, onAddRoi, onCapt
                                         const level = parseInt(e.target.value);
                                         setLogLevel(level);
                                         logger.updateConfig({ level });
+                                        configManager.set('logLevel', level);  // Persist to storage
                                     }}
                                     style={{ fontSize: '11px', padding: '4px 8px' }}
                                 >

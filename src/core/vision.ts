@@ -94,6 +94,13 @@ export class VisionSystem {
                 // Worker统计信息回调
                 logger.debug('vision', 'Worker stats received', { stats: result.stats });
                 bus.emit(EVENTS.PERFORMANCE_WORKER_STATS, result.stats);
+            } else if (type === 'WORKER_LOG') {
+                // Worker 发来的日志消息
+                const { level, message, data } = e.data;
+                if (level === 'debug') logger.debug('worker', message, data);
+                else if (level === 'warn') logger.warn('worker', message, data);
+                else if (level === 'error') logger.error('worker', message, data);
+                else logger.info('worker', message, data);
             }
         };
 
@@ -307,7 +314,17 @@ export class VisionSystem {
     }
 
     async match(screen: ImageData, template: ImageData, options: any) {
-        if (!screen) return null;
+        if (!screen) {
+            logger.warn('vision', '[Match] Skipped - no screen data');
+            return null;
+        }
+
+        logger.debug('vision', '[Match] Start', {
+            screen: `${screen.width}x${screen.height}`,
+            template: `${template.width}x${template.height}`,
+            threshold: options.threshold,
+            downsample: options.downsample
+        });
 
         // 开始性能测量
         const perfMeasurement = this.performanceEnabled ? performanceMonitor.startMatch() : null;
@@ -319,6 +336,11 @@ export class VisionSystem {
                 if (perfMeasurement) {
                     perfMeasurement.end(result);
                 }
+                logger.debug('vision', '[Match] Complete', {
+                    score: result?.score?.toFixed(4),
+                    position: result ? `(${result.x}, ${result.y})` : 'N/A',
+                    duration: result?.performance?.duration
+                });
                 resolve(result);
             });
 
@@ -337,6 +359,8 @@ export class VisionSystem {
                 // 缓存配置
                 cacheEnabled: options.frameCacheEnabled !== false
             };
+
+            // Match config (removed verbose logging here, covered above)
 
             // 安全的ArrayBuffer传输 - 创建副本避免重复传输问题
             const screenDataClone = new Uint8ClampedArray(screen.data);

@@ -8,6 +8,9 @@ import { bus, EVENTS } from '../utils/event-bus';
 import { config as configManager } from '../core/config-manager';
 import cssContent from './styles-compat.css';
 
+// 获取真实的页面 window (用于访问暴露的 BetterGi 对象)
+const realWindow = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+
 // 捕获上下文 (复用截图/ROI 逻辑)
 interface CaptureContext {
     type: 'screenshot' | 'roi' | 'asset-base64' | 'asset-roi';
@@ -47,7 +50,7 @@ function Root() {
         const { type, taskName, assetName } = captureContext;
 
         // 坐标转换: 屏幕坐标 → 游戏坐标
-        const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+        const displayInfo = (realWindow as any).BetterGi?.vision?.getDisplayInfo();
         let gameRect = rect;
         if (displayInfo) {
             gameRect = {

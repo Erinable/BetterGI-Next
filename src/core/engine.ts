@@ -479,47 +479,77 @@ export class Engine {
      */
     async handleAssetDebugMatch(data: { taskName: string; assetName: string; base64: string; roi?: any; threshold?: number }) {
         const { taskName, assetName, base64, roi, threshold } = data;
-        logger.info('engine', 'Debug matching asset', { taskName, assetName, hasROI: !!roi });
+        logger.info('engine', '[Match.Debug] Start', { taskName, assetName });
 
         try {
-            // 临时注册模板
+            // Step 1: Register template
             const tempTemplateName = `_debug_${assetName}`;
             await this.algo.register(tempTemplateName, base64);
 
-            // 捕获当前屏幕 (使用 getImageData)
+            // Step 2: Capture screen
             const screen = await this.vision.getImageData();
             if (!screen) {
+                logger.error('engine', '[Match.Debug] Failed - no video stream');
                 bus.emit(EVENTS.STATUS_UPDATE, '调试匹配失败: 无法捕获屏幕');
                 return;
             }
+            logger.debug('engine', '[Match.Debug] Screen captured', {
+                size: `${screen.width}x${screen.height}`
+            });
 
-            // 获取模板信息
+            // Step 3: Get template
             const asset = this.algo.getAsset(tempTemplateName);
             if (!asset) {
+                logger.error('engine', '[Match.Debug] Failed - template not found');
                 bus.emit(EVENTS.STATUS_UPDATE, '调试匹配失败: 模板注册失败');
                 return;
             }
 
-            // 构建匹配选项 (如果有 ROI 则使用)
+            // Step 4: Build match options
             const matchOptions: any = {
                 threshold: threshold || this.config.threshold,
                 downsample: this.config.downsample,
                 scales: this.config.scales
             };
-
-            // 如果资产有 ROI 配置，则启用
             if (roi && roi.w > 0 && roi.h > 0) {
                 matchOptions.roiEnabled = true;
                 matchOptions.roiRegions = [roi];
-                logger.info('engine', 'Using ROI for debug match', { roi });
             }
 
-            // 执行匹配
+            logger.debug('engine', '[Match.Debug] Options', {
+                threshold: matchOptions.threshold,
+                downsample: matchOptions.downsample,
+                templateSize: `${asset.template.width}x${asset.template.height}`,
+                roiEnabled: matchOptions.roiEnabled || false,
+                roi: roi ? { x: roi.x, y: roi.y, w: roi.w, h: roi.h } : null,
+                screenSize: `${screen.width}x${screen.height}`
+            });
+
+            // Step 5: Execute match
             const result = await this.vision.match(screen, asset.template, matchOptions);
 
-            if (!result || result.score < (threshold || this.config.threshold)) {
+            // Log result
+            const effectiveThreshold = threshold || this.config.threshold;
+            logger.debug('engine', '[Match.Debug] Result', {
+                score: result?.score?.toFixed(4),
+                threshold: effectiveThreshold,
+                matched: result && result.score >= effectiveThreshold
+            });
+
+            if (!result || result.score < effectiveThreshold) {
                 bus.emit(EVENTS.DEBUG_CLEAR);
-                bus.emit(EVENTS.STATUS_UPDATE, `✗ ${assetName} 未匹配到`);
+                // 提供更有用的反馈信息
+                const scoreInfo = result?.score ? ` (分数: ${(result.score * 100).toFixed(1)}%, 阈值: ${(effectiveThreshold * 100).toFixed(0)}%)` : '';
+                const suggestion = result?.score && result.score >= 0.5
+                    ? ' 尝试降低阈值或重新截取更清晰的模板'
+                    : '';
+                bus.emit(EVENTS.STATUS_UPDATE, `✗ ${assetName} 未匹配到${scoreInfo}${suggestion}`);
+                logger.info('engine', 'Debug match failed', {
+                    assetName,
+                    score: result?.score,
+                    threshold: effectiveThreshold,
+                    suggestion: result?.score && result.score >= 0.5 ? 'Consider lowering threshold' : 'Template may not be visible on screen'
+                });
                 return;
             }
 
@@ -542,12 +572,10 @@ export class Engine {
             const finalH = screenH * matchScale;
 
             // [调试日志] 输出坐标信息
-            console.log('[DEBUG] Asset Debug Match Coordinates:', {
-                result: { x: result.x, y: result.y, score: result.score, bestScale: result.bestScale },
-                displayInfo,
-                template: { width: asset.template.width, height: asset.template.height },
-                screen: { x: screenX, y: screenY, w: screenW, h: screenH },
-                final: { x: screenX + finalW / 2, y: screenY + finalH / 2, w: finalW, h: finalH }
+            logger.debug('engine', '[Match.Debug] Drawing result', {
+                screenPos: { x: screenX, y: screenY },
+                size: { w: finalW, h: finalH },
+                score: result.score
             });
 
             // 匹配成功，绘制结果 (发送中心点坐标，与 ScreenshotMatchTask 一致)

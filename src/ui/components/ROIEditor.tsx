@@ -3,6 +3,10 @@ import { useState } from 'preact/hooks';
 import { ROIRegion } from '../../core/config-manager';
 import { bus, EVENTS } from '../../utils/event-bus';
 
+// 获取真实的页面 window (用于访问暴露的 BetterGi 对象)
+const realWindow = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+const getVision = () => (realWindow as any).BetterGi?.vision;
+
 interface ROIEditorProps {
     regions: ROIRegion[];
     onChange: (regions: ROIRegion[]) => void;
@@ -21,7 +25,7 @@ export function ROIEditor({ regions, onChange, onAdd }: ROIEditorProps) {
         const updated = newRegions.find(r => r.id === id);
         if (updated) {
             // 游戏坐标 → 屏幕坐标
-            const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+            const displayInfo = getVision()?.getDisplayInfo();
             if (displayInfo) {
                 const screenX = displayInfo.offsetX + (updated.x * displayInfo.scaleX);
                 const screenY = displayInfo.offsetY + (updated.y * displayInfo.scaleY);
@@ -57,7 +61,7 @@ export function ROIEditor({ regions, onChange, onAdd }: ROIEditorProps) {
             const region = regions.find(r => r.id === id);
             if (region) {
                 // 游戏坐标 → 屏幕坐标
-                const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+                const displayInfo = getVision()?.getDisplayInfo();
                 if (displayInfo) {
                     const screenX = displayInfo.offsetX + (region.x * displayInfo.scaleX);
                     const screenY = displayInfo.offsetY + (region.y * displayInfo.scaleY);
@@ -233,7 +237,7 @@ export function ROIEditor({ regions, onChange, onAdd }: ROIEditorProps) {
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 // 游戏坐标 → 屏幕坐标
-                                                const displayInfo = window.BetterGi?.vision.getDisplayInfo();
+                                                const displayInfo = getVision()?.getDisplayInfo();
                                                 if (displayInfo) {
                                                     const screenX = displayInfo.offsetX + (region.x * displayInfo.scaleX);
                                                     const screenY = displayInfo.offsetY + (region.y * displayInfo.scaleY);

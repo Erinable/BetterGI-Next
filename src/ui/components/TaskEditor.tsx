@@ -2,7 +2,7 @@
 // 任务资产编辑器组件
 
 import { h } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useCallback } from 'preact/hooks';
 import { config as configManager, TaskConfig, TaskAsset } from '../../core/config-manager';
 import { bus, EVENTS } from '../../utils/event-bus';
 import { AssetItem } from './AssetItem';
@@ -12,9 +12,14 @@ interface TaskEditorProps {
     onCaptureAsset: (taskName: string, assetName: string, mode: 'base64' | 'roi') => void;
 }
 
+// 用于跟踪待保存的资产变更
+type PendingAssets = Map<string, Map<string, Partial<TaskAsset>>>;
+
 export function TaskEditor({ registeredTasks, onCaptureAsset }: TaskEditorProps) {
     const [expandedTask, setExpandedTask] = useState<string | null>(null);
     const [taskConfigs, setTaskConfigs] = useState<TaskConfig[]>([]);
+    // 待保存的变更: taskName -> (assetId -> changes)
+    const [pendingAssets, setPendingAssets] = useState<PendingAssets>(new Map());
 
     // 加载任务配置
     useEffect(() => {
@@ -30,25 +35,64 @@ export function TaskEditor({ registeredTasks, onCaptureAsset }: TaskEditorProps)
         setTaskConfigs(configManager.getAllTasks());
     };
 
-    // 切换任务启用状态
+    // 切换任务启用状态 (这个立即保存，因为是简单开关)
     const toggleTaskEnabled = (taskName: string, enabled: boolean) => {
         configManager.setTaskEnabled(taskName, enabled);
         refreshConfigs();
         bus.emit(EVENTS.TASK_CONFIG_UPDATE, taskName);
     };
 
-    // 更新资产
-    const updateAsset = (taskName: string, assetId: string, updates: Partial<TaskAsset>) => {
+    // 更新资产 (只更新本地 pending 状态，不立即保存)
+    const updateAsset = useCallback((taskName: string, assetId: string, updates: Partial<TaskAsset>) => {
+        setPendingAssets(prev => {
+            const next = new Map(prev);
+            if (!next.has(taskName)) {
+                next.set(taskName, new Map());
+            }
+            const taskPending = next.get(taskName)!;
+            const existing = taskPending.get(assetId) || {};
+            taskPending.set(assetId, { ...existing, ...updates });
+            return next;
+        });
+    }, []);
+
+    // 保存资产变更
+    const saveAsset = useCallback((taskName: string, assetId: string) => {
         const taskConfig = configManager.getTaskConfig(taskName);
         if (!taskConfig) return;
 
         const asset = taskConfig.assets.find(a => a.id === assetId);
-        if (asset) {
-            configManager.setTaskAsset(taskName, { ...asset, ...updates });
+        const pending = pendingAssets.get(taskName)?.get(assetId);
+
+        if (asset && pending) {
+            configManager.setTaskAsset(taskName, { ...asset, ...pending });
+            // 清除该资产的 pending 状态
+            setPendingAssets(prev => {
+                const next = new Map(prev);
+                const taskPending = next.get(taskName);
+                if (taskPending) {
+                    taskPending.delete(assetId);
+                    if (taskPending.size === 0) {
+                        next.delete(taskName);
+                    }
+                }
+                return next;
+            });
             refreshConfigs();
             bus.emit(EVENTS.ASSETS_CHANGED, taskName);
         }
-    };
+    }, [pendingAssets]);
+
+    // 检查资产是否有待保存的变更
+    const hasPendingChanges = useCallback((taskName: string, assetId: string) => {
+        return pendingAssets.get(taskName)?.has(assetId) || false;
+    }, [pendingAssets]);
+
+    // 获取合并了 pending 变更的资产
+    const getMergedAsset = useCallback((taskName: string, asset: TaskAsset): TaskAsset => {
+        const pending = pendingAssets.get(taskName)?.get(asset.id);
+        return pending ? { ...asset, ...pending } : asset;
+    }, [pendingAssets]);
 
     // 添加资产
     const addAsset = (taskName: string) => {
@@ -62,6 +106,15 @@ export function TaskEditor({ registeredTasks, onCaptureAsset }: TaskEditorProps)
 
     // 删除资产
     const deleteAsset = (taskName: string, assetId: string) => {
+        // 也清除 pending 状态
+        setPendingAssets(prev => {
+            const next = new Map(prev);
+            const taskPending = next.get(taskName);
+            if (taskPending) {
+                taskPending.delete(assetId);
+            }
+            return next;
+        });
         configManager.removeTaskAsset(taskName, assetId);
         refreshConfigs();
         bus.emit(EVENTS.ASSETS_CHANGED, taskName);
@@ -169,12 +222,14 @@ export function TaskEditor({ registeredTasks, onCaptureAsset }: TaskEditorProps)
                                             taskConfig?.assets.map(asset => (
                                                 <AssetItem
                                                     key={asset.id}
-                                                    asset={asset}
+                                                    asset={getMergedAsset(taskName, asset)}
                                                     taskName={taskName}
                                                     onUpdate={(updates) => updateAsset(taskName, asset.id, updates)}
                                                     onDelete={() => deleteAsset(taskName, asset.id)}
                                                     onCaptureBase64={() => onCaptureAsset(taskName, asset.name, 'base64')}
                                                     onCaptureROI={() => onCaptureAsset(taskName, asset.name, 'roi')}
+                                                    hasPendingChanges={hasPendingChanges(taskName, asset.id)}
+                                                    onSave={() => saveAsset(taskName, asset.id)}
                                                 />
                                             ))
                                         )}

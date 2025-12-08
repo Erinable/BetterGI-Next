@@ -40,6 +40,8 @@ export interface AppConfig {
     autoSkip: boolean;
     debugMode: boolean;
     loopInterval: number;
+    // 日志配置
+    logLevel: number;  // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
     // 性能优化配置
     downsample: number;
     scales: number[];
@@ -64,6 +66,8 @@ const DEFAULT_CONFIG: AppConfig = {
     autoSkip: false,
     debugMode: false,
     loopInterval: 1000,
+    // 日志配置
+    logLevel: 1,  // INFO by default
     // 性能优化默认值
     downsample: 0.33,
     scales: [1.0],

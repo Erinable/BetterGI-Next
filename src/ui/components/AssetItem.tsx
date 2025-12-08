@@ -5,17 +5,20 @@ import { h } from 'preact';
 import { useState } from 'preact/hooks';
 import { TaskAsset } from '../../core/config-manager';
 import { bus, EVENTS } from '../../utils/event-bus';
+import { logger } from '../../core/logging/logger';
 
 interface AssetItemProps {
     asset: TaskAsset;
-    taskName: string;           // 新增: 任务名称
+    taskName: string;           // 任务名称
     onUpdate: (updates: Partial<TaskAsset>) => void;
     onDelete: () => void;
     onCaptureBase64: () => void;
     onCaptureROI: () => void;
+    hasPendingChanges?: boolean;  // 是否有待保存的变更
+    onSave?: () => void;          // 保存变更
 }
 
-export function AssetItem({ asset, taskName, onUpdate, onDelete, onCaptureBase64, onCaptureROI }: AssetItemProps) {
+export function AssetItem({ asset, taskName, onUpdate, onDelete, onCaptureBase64, onCaptureROI, hasPendingChanges, onSave }: AssetItemProps) {
     const [isExpanded, setIsExpanded] = useState(false);
     const [showBase64, setShowBase64] = useState(false);
     const [isDebugging, setIsDebugging] = useState(false);
@@ -32,6 +35,14 @@ export function AssetItem({ asset, taskName, onUpdate, onDelete, onCaptureBase64
 
         setIsDebugging(true);
         bus.emit(EVENTS.STATUS_UPDATE, `测试匹配: ${asset.name}...`);
+
+        // Log debug request
+        logger.debug('ui', '[AssetItem] Debug match request', {
+            taskName,
+            assetName: asset.name,
+            hasROI: !!asset.roi,
+            threshold: asset.threshold
+        });
 
         // 发送调试请求给 engine
         bus.emit('asset:debug-match', {
@@ -169,6 +180,19 @@ export function AssetItem({ asset, taskName, onUpdate, onDelete, onCaptureBase64
                             >
                                 📍 框选
                             </button>
+                            {hasROI && (
+                                <button
+                                    class="bgi-btn danger"
+                                    style={{ padding: '3px 6px', fontSize: '10px', marginTop: 0 }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onUpdate({ roi: undefined });
+                                    }}
+                                    title="清除 ROI"
+                                >
+                                    ✕
+                                </button>
+                            )}
                         </div>
                         <div style={{
                             display: 'grid',
@@ -235,13 +259,23 @@ export function AssetItem({ asset, taskName, onUpdate, onDelete, onCaptureBase64
                         >
                             删除
                         </button>
-                        <button
-                            class="bgi-btn primary"
-                            style={{ padding: '5px', fontSize: '11px', marginTop: 0 }}
-                            onClick={() => setIsExpanded(false)}
-                        >
-                            完成
-                        </button>
+                        {hasPendingChanges ? (
+                            <button
+                                class="bgi-btn warning"
+                                style={{ padding: '5px', fontSize: '11px', marginTop: 0 }}
+                                onClick={(e) => { e.stopPropagation(); onSave?.(); }}
+                            >
+                                💾 保存
+                            </button>
+                        ) : (
+                            <button
+                                class="bgi-btn primary"
+                                style={{ padding: '5px', fontSize: '11px', marginTop: 0 }}
+                                onClick={() => setIsExpanded(false)}
+                            >
+                                完成
+                            </button>
+                        )}
                     </div>
                 </div>
             )}

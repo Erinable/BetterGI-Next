@@ -33,17 +33,24 @@ export class AlgoSystem {
                 canvas.height = img.height;
                 const ctx = canvas.getContext('2d');
                 if (!ctx) {
+                    logger.error('algo', '[Register] Failed - canvas error', { name });
                     reject(new Error(`Canvas context error while registering asset: ${name}`));
                     return;
                 }
 
                 ctx.drawImage(img, 0, 0);
                 const template = ctx.getImageData(0, 0, img.width, img.height);
-
                 this.assets.set(name, { name, template });
+                logger.debug('algo', '[Register] Success', {
+                    name,
+                    size: `${img.width}x${img.height}`
+                });
                 resolve();
             };
-            img.onerror = () => reject(new Error(`Failed to load image asset: ${name}`));
+            img.onerror = () => {
+                logger.error('algo', '[Register] Failed - image load error', { name });
+                reject(new Error(`Failed to load image asset: ${name}`));
+            };
             img.src = base64;
         });
     }
