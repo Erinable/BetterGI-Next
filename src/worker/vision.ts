@@ -298,33 +298,35 @@ class CVWorkerController {
     }
 
     private handleSingleMatch(payload: any): MatchResult {
-        const startTime = performance.now();
         const { image, template, config } = payload;
 
-        return MatScope.run(scope => {
-            const srcProc = this.preprocessImage(image, config, scope);
-            // 使用提取的帮助函数
-            const { mat: templMat, isCached } = this.getTemplateMat(template, config, scope);
-
-            const result = this.runMatching(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
-
-            const duration = performance.now() - startTime;
-            this.stats.matchCount++;
-            this.stats.totalTime += duration;
-
-            return {
-                ...result,
-                cacheHit: isCached, // 使用返回的状态
-                performance: {
-                    duration: Math.round(duration * 100) / 100,
-                    matchCount: this.stats.matchCount,
-                    averageTime: Math.round((this.stats.totalTime / this.stats.matchCount) * 100) / 100
-                },
-                templateWidth: template.width,
-                templateHeight: template.height
-            };
+        // Single match 作为 Batch match 的特例
+        const batchResult = this.handleBatchMatch({
+            image,
+            templates: [template],
+            config
         });
+
+        // 解包批量结果并补充单次匹配特有的字段
+        const item = batchResult.results[0];
+        return {
+            score: item.score,
+            x: item.x,
+            y: item.y,
+            scale: 1.0,
+            usedROI: item.usedROI,
+            adaptiveScaling: false,
+            cacheHit: item.cacheHit,
+            performance: {
+                duration: batchResult.totalDuration,
+                matchCount: this.stats.matchCount,
+                averageTime: this.stats.matchCount > 0 ? this.stats.totalTime / this.stats.matchCount : 0
+            },
+            templateWidth: template.width,
+            templateHeight: template.height
+        };
     }
+
 
     // 【优化 1】嵌套 Scope 解决批量匹配内存堆积
     private handleBatchMatch(payload: any): any {
@@ -345,21 +347,8 @@ class CVWorkerController {
                     const itemStartTime = performance.now();
                     const { mat: templMat, isCached } = this.getTemplateMat(template, config, itemScope);
 
-                    let matchRes: any;
-
-                    // 这里的逻辑保持不变，但传入的是 itemScope
-                    if (template.roi && template.roi.x !== undefined) {
-                        const sRoi = this.getScaledRoi(template.roi, srcProc.scaleFactor, srcProc.mat.size());
-                        if (sRoi) {
-                            matchRes = this.matchWithROI(srcProc.mat, templMat, sRoi, config, srcProc.scaleFactor, itemScope);
-                        } else {
-                            matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
-                        }
-                    } else if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
-                        matchRes = this.runMatchingWithRegions(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
-                    } else {
-                        matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, itemScope);
-                    }
+                    // 使用统一的匹配方法（包含 ROI 分发和坐标反缩放）
+                    const matchRes = this.matchSingleTemplate(srcProc, templMat, template, config, itemScope);
 
                     results.push({
                         name: template.name || `template_${i}`,
@@ -468,24 +457,57 @@ class CVWorkerController {
         return sRoi;
     }
 
-    private runMatching(src: any, templ: any, config: MatchConfig, scale: number, scope: MatScope): MatchResult {
-        let bestRes: MatchResult = {
-            score: -1, x: 0, y: 0, scale: 1.0, usedROI: false, adaptiveScaling: false
-        };
+    // --- ROI Detection Helpers ---
 
-        if (config.roi && config.roi.enabled && config.roi.regions && config.roi.regions.length > 0) {
-            bestRes = this.runMatchingWithRegions(src, templ, config, scale, scope);
-        } else {
-            bestRes = this.optimizedMatchTemplate(src, templ, config, scale, scope);
+    private hasConfigRoi(config: MatchConfig): boolean {
+        return !!(config.roi && config.roi.enabled &&
+                  config.roi.regions && config.roi.regions.length > 0);
+    }
+
+    private hasTemplateRoi(template: any): boolean {
+        return !!(template.roi && template.roi.x !== undefined);
+    }
+
+    // --- Unified Matching Entry Point ---
+
+    /**
+     * 统一的单模板匹配方法
+     * 负责 ROI 分发和坐标反缩放
+     */
+    private matchSingleTemplate(
+        srcProc: ProcessedImage,
+        templMat: any,
+        template: any,
+        config: MatchConfig,
+        scope: MatScope
+    ): MatchResult {
+        let matchRes: MatchResult;
+
+        // 优先使用模板级 ROI
+        if (this.hasTemplateRoi(template)) {
+            const sRoi = this.getScaledRoi(template.roi, srcProc.scaleFactor, srcProc.mat.size());
+            matchRes = sRoi
+                ? this.matchWithROI(srcProc.mat, templMat, sRoi, config, srcProc.scaleFactor, scope)
+                : this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
+        }
+        // 其次使用全局 ROI
+        else if (this.hasConfigRoi(config)) {
+            matchRes = this.runMatchingWithRegions(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
+        }
+        // 无 ROI 全图匹配
+        else {
+            matchRes = this.optimizedMatchTemplate(srcProc.mat, templMat, config, srcProc.scaleFactor, scope);
         }
 
-        const invScale = 1.0 / scale;
+        // 统一坐标反缩放
+        const invScale = 1.0 / srcProc.scaleFactor;
         return {
-            ...bestRes,
-            x: bestRes.x * invScale,
-            y: bestRes.y * invScale
+            ...matchRes,
+            x: matchRes.x * invScale,
+            y: matchRes.y * invScale
         };
     }
+
 
     private runMatchingWithRegions(src: any, templ: any, config: MatchConfig, currentScale: number, scope: MatScope): MatchResult {
         let bestRes: MatchResult = { score: -1, x: 0, y: 0, scale: 1.0, usedROI: false, adaptiveScaling: false };

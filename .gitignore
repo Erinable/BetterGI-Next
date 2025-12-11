@@ -107,3 +107,4 @@ hive-mind-prompt-*.txt
 
 # Analysis project (reference only)
 analysis_project/
+.agent/
